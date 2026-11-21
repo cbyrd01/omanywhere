@@ -1,0 +1,10 @@
+# Working notes (research, specs, plans) stay local and are never committed.
+notes/
+
+# macOS
+.DS_Store
+
+# Build and test output
+/build/
+/out/
+*.log
