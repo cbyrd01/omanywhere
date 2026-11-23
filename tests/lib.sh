@@ -1,8 +1,8 @@
 #!/bin/bash
 # Helpers for the container tests. Source it; it runs nothing by itself.
 #
-# Containers are always named omanywhere-test-*: the host is shared with other
-# work, so these helpers refuse to start or remove anything else.
+# Containers and volumes are always named omanywhere-test-*: the host is shared
+# with other work, so these helpers refuse to start or remove anything else.
 
 IMAGE=${IMAGE:-omanywhere:dev}
 
@@ -27,7 +27,7 @@ pass() {
 }
 
 check_name() {
-  [[ $1 == omanywhere-test-* ]] || fail "refusing to touch container '$1': test containers are named omanywhere-test-*"
+  [[ $1 == omanywhere-test-* ]] || fail "refusing to touch '$1': test containers and volumes are named omanywhere-test-*"
 }
 
 # cexec NAME CMD...: run CMD as root in the container.
@@ -43,6 +43,16 @@ start_container() {
   shift
   check_name "$name"
   docker run -d --name "$name" "${RUN_FLAGS[@]}" "$@" "$IMAGE" >/dev/null
+}
+
+# container_ip NAME: the container's address on its Docker network.
+container_ip() {
+  docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$1"
+}
+
+# test_key DIR: make a throwaway ed25519 key pair, DIR/id_ed25519{,.pub}.
+test_key() {
+  ssh-keygen -q -t ed25519 -N '' -C omanywhere-test -f "$1/id_ed25519"
 }
 
 # wait_running NAME TIMEOUT: wait until systemd has finished booting and print
@@ -106,5 +116,14 @@ cleanup() {
   for name in "$@"; do
     check_name "$name"
     docker rm -f "$name" >/dev/null 2>&1 || true
+  done
+}
+
+# remove_volumes NAME...: remove each volume that exists.
+remove_volumes() {
+  local name
+  for name in "$@"; do
+    check_name "$name"
+    docker volume rm -f "$name" >/dev/null 2>&1 || true
   done
 }

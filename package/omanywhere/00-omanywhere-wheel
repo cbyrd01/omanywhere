@@ -1,0 +1,6 @@
+# Omanywhere: members of wheel may run any command, with their password. An
+# Omarchy install makes this grant (archinstall in /etc/sudoers, or
+# omarchy-provision-owner in 00-omarchy-wheel); omanywhere makes the owner, so
+# it ships the grant. Named 00- so it is read first: sudo takes the last rule
+# that matches, so Omarchy's narrower NOPASSWD rules, read later, still apply.
+%wheel ALL=(ALL:ALL) ALL

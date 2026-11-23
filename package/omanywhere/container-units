@@ -1,0 +1,25 @@
+# Units that have no work in a container and fail there. Each gets a drop-in,
+# /usr/lib/systemd/system/<unit>.d/omanywhere-container.conf, with
+# ConditionVirtualization=!container: skipped in a container, unchanged
+# anywhere else. The reason goes into the drop-in as its comment.
+#
+# Several also fail for a reason that is systemd's: a unit with User= and a
+# system call filter fails at step USER without CAP_SYS_ADMIN ("Failed to keep
+# CAP_SYS_ADMIN", systemd issue #34565). That's no reason to skip a unit the
+# desktop needs; each one here is skipped because it has no job in a container.
+#
+# unit                          reason
+bluetooth.service               no Bluetooth controller in a container; the host owns the radios
+docker.service                  Docker inside an unprivileged container can't work (no cgroup delegation, mounts or iptables)
+docker.socket                   would start docker.service (above) on first use
+limine-snapper-sync.service     no Limine boot menu or btrfs snapshots in a container; the host boots the machine
+linux-modules-cleanup.service   no kernel in the image; the container runs on the host's kernel and modules
+power-profiles-daemon.service   the host manages power; a container can't set CPU or platform power profiles
+snapper-cleanup.service         no btrfs snapshots in a container (the root is overlayfs), so nothing to clean up
+snapper-cleanup.timer           starts snapper-cleanup.service (above)
+systemd-oomd.service            the host's OOM handling covers the container, whose memory limit Docker sets
+systemd-oomd.socket             would start systemd-oomd.service (above)
+systemd-resolved.service        Docker gives the container its DNS in /etc/resolv.conf
+systemd-resolved-monitor.socket would start systemd-resolved.service (above)
+systemd-resolved-varlink.socket would start systemd-resolved.service (above)
+ufw.service                     the host's firewall governs the container's network; netfilter needs NET_ADMIN, which the container lacks

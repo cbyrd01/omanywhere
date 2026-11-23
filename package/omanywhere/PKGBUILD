@@ -1,0 +1,64 @@
+# The one package omanywhere adds to stock Omarchy. It never replaces a file
+# another package owns: it adds its own unit, drop-ins, a preset, a tmpfiles
+# entry, an sshd_config.d file and a sudoers.d file. Built from these local
+# files by image/Containerfile (package stage); nothing is downloaded.
+pkgname=omanywhere
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Run stock Omarchy as a headless container desktop: owner account, ssh, container drop-ins'
+arch=(any)
+url='https://github.com/cbyrd01/omanywhere'
+license=(LicenseRef-unspecified)
+depends=(omarchy openssh sudo)
+backup=(etc/ssh/sshd_config.d/10-omanywhere.conf etc/sudoers.d/00-omanywhere-wheel)
+install=omanywhere.install
+source=(
+  owner
+  omanywhere-owner.service
+  omanywhere.preset
+  omanywhere.tmpfiles
+  10-omanywhere.conf
+  sshdgenkeys.conf
+  00-omanywhere-wheel
+  container-units
+)
+sha256sums=(
+  '432c3d6c33a7407cf9ed5851c5326c8b7154c4898c343339cf824db45c78277f'
+  'c7745df4adaa8889bf38b927f6e69ea12056b8bfe96e0e88b8ac6bdcdd717489'
+  '2923fa8e372e1d16747e02a93a4aaeb07970ebd89cea0ae12d49be39a112838a'
+  '94ba9da3b0401e58518dec7ecb669c40b870b935dbe8cd030e8b1710fcac90cb'
+  '3d12a40d4f47e5a4bbf5bbc4ea9585e01d9bf4da2ba7d359111e1cd2e41e41cf'
+  '0ea40317a6b709c1f6c8011d3ccada41d4a402d547b630214b7e4cbdee820f69'
+  '1b46b7b045f2a15ed1afc174c31288ab440678f4857adfea8971b3f37027ac07'
+  'f855a80069205855d72d339439c1fcc53744f2e8e74d174a2e6f49ccc36508a5'
+)
+
+check() {
+  visudo -cf 00-omanywhere-wheel
+}
+
+package() {
+  local unit reason
+  local -r units=usr/lib/systemd/system
+
+  install -Dm0755 owner "$pkgdir/usr/lib/omanywhere/owner"
+  install -Dm0644 omanywhere-owner.service "$pkgdir/$units/omanywhere-owner.service"
+  install -Dm0644 omanywhere.preset "$pkgdir/usr/lib/systemd/system-preset/80-omanywhere.preset"
+  install -Dm0644 omanywhere.tmpfiles "$pkgdir/usr/lib/tmpfiles.d/omanywhere.conf"
+  install -Dm0644 10-omanywhere.conf "$pkgdir/etc/ssh/sshd_config.d/10-omanywhere.conf"
+  install -Dm0644 sshdgenkeys.conf "$pkgdir/$units/sshdgenkeys.service.d/omanywhere.conf"
+  install -dm0750 "$pkgdir/etc/sudoers.d" # as the sudo package has it
+  install -m0440 00-omanywhere-wheel "$pkgdir/etc/sudoers.d/00-omanywhere-wheel"
+  install -dm0755 "$pkgdir/var/lib/omanywhere"
+
+  # One drop-in per unit in container-units, its reason as the comment.
+  while read -r unit reason; do
+    [[ -n $unit && $unit != \#* ]] || continue
+    [[ -n $reason ]] || { echo "container-units: no reason given for $unit" >&2; return 1; }
+    install -Dm0644 /dev/stdin "$pkgdir/$units/$unit.d/omanywhere-container.conf" <<DROPIN
+# Omanywhere: skipped in a container: $reason.
+[Unit]
+ConditionVirtualization=!container
+DROPIN
+  done <container-units
+}

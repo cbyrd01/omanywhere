@@ -1,6 +1,7 @@
 #!/bin/bash
-# Boot test: the image is sealed, boots systemd with Omarchy installed, and
-# stops cleanly. Usage: tests/boot.sh (IMAGE defaults to omanywhere:dev).
+# Boot test: the image is sealed, boots systemd with Omarchy installed to
+# `running` with no failed unit, and stops cleanly. Usage: tests/boot.sh
+# (IMAGE defaults to omanywhere:dev).
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -10,7 +11,8 @@ source "$here/lib.sh"
 name=omanywhere-test-boot-$$
 seal=$name-seal
 check_name "$seal"
-trap 'cleanup "$name" "$seal"' EXIT
+tmp=$(mktemp -d)
+trap 'cleanup "$name" "$seal"; rm -rf "$tmp"' EXIT
 
 # The fingerprint of Omarchy's package signing key (image/keys/README.md).
 omarchy_fpr=40DFB630FF42BCFFB047046CF0134EE680CAC571
@@ -18,23 +20,30 @@ omarchy_fpr=40DFB630FF42BCFFB047046CF0134EE680CAC571
 docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "image $IMAGE not found (run make image)"
 
 # The image as shipped, before anything boots it: no per-machine identity, no
-# pacman keyring and no package cache.
+# pacman keyring, no package cache, and no hardware steps queued for the first
+# boot. The machine-id lives in the state volume, through a symlink.
 docker run --rm --name "$seal" --network none --entrypoint /bin/bash "$IMAGE" -c '
   set -e
   shopt -s nullglob
-  keys=(/etc/ssh/ssh_host_*)
+  keys=(/etc/ssh/ssh_host_* /var/lib/omanywhere/ssh/etc/ssh/ssh_host_*)
   if (( ${#keys[@]} )); then echo "ssh host keys in the image: ${keys[*]}"; exit 1; fi
-  if [[ ! -f /etc/machine-id || -s /etc/machine-id ]]; then echo "/etc/machine-id is missing or not empty"; exit 1; fi
+  if [[ $(readlink /etc/machine-id) != /var/lib/omanywhere/machine-id ]]; then
+    echo "/etc/machine-id is not a symlink to /var/lib/omanywhere/machine-id"; exit 1
+  fi
+  if [[ ! -f /etc/machine-id || -s /etc/machine-id ]]; then echo "the machine-id is missing or not empty"; exit 1; fi
   if [[ -e /etc/pacman.d/gnupg ]]; then echo "a pacman keyring is in the image"; exit 1; fi
   pkgs=(/var/cache/pacman/pkg/*)
   if (( ${#pkgs[@]} )); then echo "${#pkgs[@]} files in the package cache"; exit 1; fi
+  if [[ -s /var/lib/omarchy/image/deferred-steps ]]; then echo "hardware steps are queued for the first boot"; exit 1; fi
 ' || fail "the image is not sealed"
-pass "sealed: no ssh host keys, empty machine-id, no keyring, no package cache"
+pass "sealed: no ssh host keys, empty machine-id, no keyring, no package cache, no hardware steps queued"
 
-start_container "$name"
+# omanywhere-owner.service fails without a key (tests/owner.sh checks that).
+test_key "$tmp"
+start_container "$name" -e OMANYWHERE_AUTHORIZED_KEYS="$(cat "$tmp/id_ed25519.pub")"
 state=$(wait_running "$name" 120) || fail "systemd did not reach running or degraded in 120 s"
 wait_settled "$name" 60 || fail "systemd still had jobs queued 60 s after boot"
-pass "systemd is $state"
+pass "systemd finished booting: $state"
 
 # Omarchy 4.5 is built for Hyprland 0.56, which Omarchy's stable mirror serves.
 # Anything else means the build drifted back to Arch's live mirrors.
@@ -44,12 +53,14 @@ packages=$(cexec "$name" pacman -Q omarchy hyprland 2>/dev/null) || fail "omarch
 pass "omarchy $omarchy_version, hyprland $hyprland_version"
 
 # omarchy-provision-hardware retires the build manifest on the first boot,
-# then makes the pacman keyring the image asked for.
+# then makes the pacman keyring the image asked for, finds no hardware step
+# queued, and is done.
 cexec "$name" test ! -e /var/lib/omarchy/image/target -a -f /var/lib/omarchy/image/target.booted ||
   fail "the image-target manifest was not retired to target.booted at boot"
 pass "image-target manifest retired to target.booted"
-# Checked on its own: omarchy-provision-hardware.service is allowed to fail
-# (below), and a failed keyring exits 75 like a failed hardware step.
+cexec "$name" test ! -e /var/lib/omarchy/image/deferred-steps ||
+  fail "omarchy-provision-hardware did not finish: the deferred-steps queue is still there"
+pass "deferred hardware setup finished with nothing to run"
 cexec "$name" test ! -e /var/lib/omarchy/image/pacman-keyring ||
   fail "the pacman keyring request is still pending (no keyring made at first boot)"
 cexec "$name" pacman-key --list-keys "$omarchy_fpr" >/dev/null 2>&1 ||
@@ -70,7 +81,13 @@ if [[ -n $unexpected ]]; then
   done <<<"$unexpected"
   fail "units failed that tests/allowed-failed.txt does not allow: ${unexpected//$'\n'/ }"
 fi
-pass "failed units are all allowed ($(grep -c . <<<"$failed"): ${failed//$'\n'/ })"
+if [[ -n $failed ]]; then
+  pass "failed units are all allowed ($(grep -c . <<<"$failed"): ${failed//$'\n'/ })"
+else
+  # A clean boot is `running`; only a failed unit may leave it degraded.
+  [[ $state == running ]] || fail "no unit failed, yet systemd is $state, not running"
+  pass "no failed units: systemd is running"
+fi
 
 # A clean systemd shutdown, not the SIGKILL docker sends after the timeout.
 start=$(date +%s%N)
