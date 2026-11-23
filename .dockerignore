@@ -1,0 +1,7 @@
+# The build context is the repository root (make image); the build reads only
+# image/ and package/.
+.git
+.cache
+notes
+.superpowers
+tests

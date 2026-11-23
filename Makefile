@@ -30,9 +30,9 @@ BASE_IMAGE := $(shell awk -F= '/^ARG BASE_IMAGE=/ { print $$2; exit }' image/Con
 verify-base: tools
 	TOOLS_IMAGE=$(TOOLS_IMAGE) scripts/verify-base $(BASE_IMAGE)
 
-# package/ is the omanywhere-src build context: the package stage builds it.
+# The repository root is the build context (.dockerignore trims it).
 image: verify-base
-	docker build --build-context omanywhere-src=package -f image/Containerfile -t $(IMAGE) image
+	docker build -f image/Containerfile -t $(IMAGE) .
 
 test: test-boot test-owner
 

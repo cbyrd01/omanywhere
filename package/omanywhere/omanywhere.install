@@ -1,28 +1,4 @@
-# pacman sandbox: pacman's download sandbox restricts the filesystem with
-# Landlock before it sets no_new_privs, which the kernel refuses to root
-# without CAP_SYS_ADMIN, so in a container every download fails ("restricting
-# filesystem access failed because the Landlock ruleset could not be
-# applied"). Arch's official container image sets DisableSandboxFilesystem for
-# the same reason; the system call filter and the switch to the alpm user stay
-# on. Omarchy's pacman.conf (installed once, at install) doesn't have the
-# line, so add it under [options]. Remove it once pacman sets no_new_privs
-# first (libalpm alpm_sandbox_setup_child).
-_marker="# omanywhere: in a container pacman can't apply Landlock (it sets no_new_privs too late), as in Arch's image"
-
-_sandbox_filesystem_off() {
-  grep -qx 'DisableSandboxFilesystem' /etc/pacman.conf && return
-  sed -i "/^\[options\]\$/a $_marker\nDisableSandboxFilesystem" /etc/pacman.conf
-}
-
 post_install() {
-  _sandbox_filesystem_off
+  # Arch packages don't enable their units; omanywhere's are the point of it.
   systemctl preset omanywhere-owner.service sshd.service
-}
-
-post_upgrade() {
-  _sandbox_filesystem_off
-}
-
-post_remove() {
-  sed -i "\\|^$_marker\$|{N;/\nDisableSandboxFilesystem\$/d}" /etc/pacman.conf
 }

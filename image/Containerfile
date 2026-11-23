@@ -1,10 +1,11 @@
 # Stock Omarchy as a container image that boots systemd.
 #
-# Build: make image (verifies the base with cosign first, and passes
-# package/ as the omanywhere-src build context). The package stage builds
-# omanywhere, our one package; the system stage installs Omarchy the way
-# Omarchy builds its own images, then omanywhere; the final stage copies its
-# root into an empty image, so no build layer or leftover ships.
+# Build: make image, which verifies the base with cosign first, then runs
+# `docker build -f image/Containerfile .` from the repository root (the build
+# context; .dockerignore keeps it to what the build reads). The package stage
+# builds omanywhere, our one package; the system stage installs Omarchy the
+# way Omarchy builds its own images, then omanywhere; the final stage copies
+# its root into an empty image, so no build layer or leftover ships.
 
 # Arch Linux's official image, pinned by digest; both build stages start from
 # it. `make verify-base` checks its cosign signature, and reads the ref from
@@ -32,7 +33,7 @@ RUN --mount=type=cache,target=/var/cache/pacman/pkg,sharing=locked \
 
 # --nodeps: omanywhere depends on omarchy, which this stage doesn't install;
 # the system stage's pacman -U resolves the dependencies.
-RUN --mount=type=bind,from=omanywhere-src,source=omanywhere,target=/run/omanywhere-src \
+RUN --mount=type=bind,source=package/omanywhere,target=/run/omanywhere-src \
     install -d -o nobody -g nobody /build /out && \
     cp -r /run/omanywhere-src/. /build/ && \
     chown -R nobody:nobody /build && \
@@ -57,7 +58,7 @@ SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 # Then a keyring: the image ships Arch's keys without a master key. Omarchy's
 # key comes from the vendored files, checked against their pinned sums, and
 # must be the one fingerprint keys/README.md names.
-RUN --mount=type=bind,source=keys,target=/run/omarchy-keys \
+RUN --mount=type=bind,source=image/keys,target=/run/omarchy-keys \
     omarchy_fpr=40DFB630FF42BCFFB047046CF0134EE680CAC571 && \
     awk '/^\[options\]/ && seen++ { exit } { print }' /etc/pacman.conf >/etc/pacman.conf.new && \
     mv /etc/pacman.conf.new /etc/pacman.conf && \
@@ -118,8 +119,7 @@ RUN --mount=type=cache,target=/var/cache/pacman/pkg,sharing=locked \
       { tail -n 60 /var/log/omarchy-install.log; exit 1; }; }
 
 # omanywhere: the owner account, ssh and the container drop-ins
-# (package/omanywhere/PKGBUILD). Installed after omarchy-apply-system, so the
-# pacman.conf line its install script adds lands in Omarchy's pacman.conf.
+# (package/omanywhere/PKGBUILD).
 RUN --mount=type=cache,target=/var/cache/pacman/pkg,sharing=locked \
     --mount=type=bind,from=package,source=/out,target=/run/omanywhere-pkg \
     pacman -U --noconfirm /run/omanywhere-pkg/omanywhere-*.pkg.tar.zst
@@ -147,17 +147,34 @@ RUN --mount=type=cache,target=/var/cache/pacman/pkg,sharing=locked \
 #   NVIDIA GPU). GPU userspace comes from the host at run time instead. An
 #   empty queue is Omarchy's own "nothing deferred": the first boot still
 #   retires the manifest and makes the keyring requested here, then disables
-#   omarchy-provision-hardware.service.
+#   omarchy-provision-hardware.service. Upstream: not yet filed — proposal:
+#   let the image-target manifest mark a container target so apply-system
+#   skips hardware steps.
+# - pacman.conf: DisableSandboxFilesystem, as Arch's official image
+#   (archlinux-docker) sets it. pacman's download sandbox restricts the
+#   filesystem with Landlock before it sets no_new_privs (libalpm
+#   alpm_sandbox_setup_child), and the kernel refuses that to root without
+#   CAP_SYS_ADMIN, so in a running container every download fails
+#   ("restricting filesystem access failed because the Landlock ruleset could
+#   not be applied"). The system call filter and the switch to the alpm user
+#   stay on. Upstream: not yet filed — proposal: pacman sets no_new_privs
+#   before it applies Landlock (https://gitlab.archlinux.org/pacman/pacman);
+#   drop the line once it does. omarchy-refresh-pacman (and so
+#   omarchy-channel-set) copies Omarchy's pacman.conf back without it; the
+#   owner's pre-refresh-pacman hook puts it back
+#   (package/omanywhere/pre-refresh-pacman).
 # - No .pacnew files: reinstalling pacman after pacman.conf and the mirrorlist
 #   were edited above left Arch's stock copies; omarchy-apply-system has since
 #   installed Omarchy's own versions of both.
 RUN rm -f /etc/ssh/ssh_host_* && \
-    rm -f /var/lib/omanywhere/ssh/etc/ssh/ssh_host_* && \
+    rm -f /var/lib/omanywhere/ssh/ssh_host_* && \
     install -m 0444 /dev/null /var/lib/omanywhere/machine-id && \
     ln -sfn /var/lib/omanywhere/machine-id /etc/machine-id && \
     rm -rf /etc/pacman.d/gnupg && \
     install -m 0644 /dev/null /var/lib/omarchy/image/pacman-keyring && \
     install -m 0644 /dev/null /var/lib/omarchy/image/deferred-steps && \
+    sed -i '/^\[options\]$/a DisableSandboxFilesystem' /etc/pacman.conf && \
+    test "$(grep -cx DisableSandboxFilesystem /etc/pacman.conf)" = 1 && \
     rm -f /etc/pacman.conf.pacnew /etc/pacman.d/mirrorlist.pacnew && \
     find /tmp /var/tmp -mindepth 1 -delete
 

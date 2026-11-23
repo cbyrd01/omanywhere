@@ -59,9 +59,12 @@ The image adds one package of its own, `omanywhere` (`package/omanywhere/`), bui
 image's `package` stage. It makes the owner account at boot from `OMANYWHERE_USER`,
 `OMANYWHERE_UID`, `OMANYWHERE_AUTHORIZED_KEYS`, `OMANYWHERE_PASSWORD` and `TZ`, given with
 `docker run -e` or as files under `/run/secrets/` (see `package/omanywhere/owner`).
-State lives in two named volumes, `/home` and `/var/lib/omanywhere` (the machine-id and the ssh
-host keys). A bind-mounted state directory needs an empty `machine-id` file in it before the
-first boot.
+The keys given to the container are authoritative and set again on every boot (sshd reads them
+from `/run/omanywhere/authorized_keys/`); keys the owner adds to `~/.ssh/authorized_keys`
+themselves are kept. State lives in two named volumes, `/home` and `/var/lib/omanywhere` (the
+machine-id and the ssh host key); use named volumes, which Docker fills from the image. A
+bind-mounted state directory starts empty, so its first boot can't keep a machine-id and is
+degraded; from the second boot on it behaves like a named volume.
 
 The tools (cosign, gitleaks, shellcheck) come from Arch Linux's signed repositories,
 installed in a small image built from `tools/Containerfile`.

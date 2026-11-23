@@ -3,12 +3,11 @@
 # empty, such as a bind-mounted host directory.
 d /var/lib/omanywhere 0755 root root -
 d /var/lib/omanywhere/ssh 0755 root root -
-d /var/lib/omanywhere/ssh/etc 0755 root root -
-d /var/lib/omanywhere/ssh/etc/ssh 0755 root root -
 # /etc/machine-id is a symlink to this file (image/Containerfile). systemd
-# writes the machine-id it makes into it when it finds it empty. When it is
-# missing, systemd can only keep the id in memory, and that boot is degraded
-# (dbus-broker can't read a machine-id). So a state volume that starts empty
-# needs one boot to get this file; give it an empty machine-id file, or use a
-# named volume, which Docker fills from the image.
+# writes the machine-id it makes into it when it finds it empty. When the file
+# is missing, systemd can only keep the id in memory, and that boot is
+# degraded (dbus-broker can't read a machine-id). This line can't help that
+# first boot, which has run before it; it makes the empty file, so the id is
+# kept from the second boot on. Named volumes, which Docker fills from the
+# image, have the file from the start.
 f /var/lib/omanywhere/machine-id 0444 root root -

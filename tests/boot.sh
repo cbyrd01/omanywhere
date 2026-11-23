@@ -25,7 +25,7 @@ docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "image $IMAGE not found (r
 docker run --rm --name "$seal" --network none --entrypoint /bin/bash "$IMAGE" -c '
   set -e
   shopt -s nullglob
-  keys=(/etc/ssh/ssh_host_* /var/lib/omanywhere/ssh/etc/ssh/ssh_host_*)
+  keys=(/etc/ssh/ssh_host_* /var/lib/omanywhere/ssh/ssh_host_*)
   if (( ${#keys[@]} )); then echo "ssh host keys in the image: ${keys[*]}"; exit 1; fi
   if [[ $(readlink /etc/machine-id) != /var/lib/omanywhere/machine-id ]]; then
     echo "/etc/machine-id is not a symlink to /var/lib/omanywhere/machine-id"; exit 1
