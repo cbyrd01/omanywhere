@@ -41,3 +41,15 @@ Not started. The research and the approach are in `notes/` (local, not committed
 - Access is ssh only (`ssh host gliff-server --stdio`), with keys only and no published ports.
   [Glifftop](https://github.com/cbyrd01/glifftop) or any other gliff client connects.
 - CPU-only hosts still need some DRM device today (for example `vkms`). See `notes/`.
+
+## Development
+
+Everything runs in containers; the host needs only Docker and `make`.
+
+```sh
+make hooks   # once per clone: gitleaks scans each commit's staged changes
+make lint    # shellcheck + gitleaks over the full history (what CI runs)
+```
+
+The tools (cosign, gitleaks, shellcheck) come from Arch Linux's signed repositories,
+installed in a small image built from `tools/Containerfile`.

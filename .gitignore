@@ -8,3 +8,6 @@ notes/
 /build/
 /out/
 *.log
+
+# Superpowers SDD workspaces (local scratch)
+.superpowers/
