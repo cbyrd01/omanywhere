@@ -1,0 +1,4 @@
+#!/bin/bash
+# Scan staged changes for secrets before they are committed (enable with `make hooks`).
+set -euo pipefail
+exec make --no-print-directory -C "$(git rev-parse --show-toplevel)" secrets-staged

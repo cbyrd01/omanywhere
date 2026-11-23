@@ -1,0 +1,13 @@
+# Lint and verification tools, all from Arch Linux's signed repositories.
+#
+# Built from Docker's official-library Arch image, not from Arch's own signed
+# ghcr.io image: cosign here verifies that ghcr.io image, so it must not run
+# from it. The two come from separate build pipelines.
+FROM docker.io/library/archlinux:base-20261108.0.623074@sha256:d4594bb2300cba11f41c2f27923eb56f63d9988909c402f9c95517d1e362c899
+
+RUN pacman-key --init && pacman-key --populate archlinux && \
+    pacman -Syu --noconfirm --needed cosign gitleaks git shellcheck && \
+    pacman -Scc --noconfirm && \
+    git config --system --add safe.directory '*'
+
+WORKDIR /src
