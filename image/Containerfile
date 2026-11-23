@@ -1,0 +1,116 @@
+# Stock Omarchy as a container image that boots systemd.
+#
+# Build: make image (verifies the base with cosign first). The system stage
+# installs Omarchy the way Omarchy builds its own images; the final stage copies
+# its root into an empty image, so no build layer or leftover ships.
+
+# Arch Linux's official image, pinned by digest. `make verify-base` checks its
+# cosign signature, and reads the ref from this line.
+#
+# Keep this base dated at or before Omarchy's stable snapshot of Arch (below):
+# a newer base has packages newer than the snapshot, and the build would have
+# to downgrade them. The snapshot's core.db was last modified 2026-10-22; the
+# build fails if any installed package is newer than its repository.
+FROM ghcr.io/archlinux/archlinux:base-20261021.0.614159@sha256:09d7c61fa6a0b6ec21020d75dec1cf901208ee601407fe6ef0f7988c05b94d19 AS system
+
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
+
+# pacman.conf:
+# - Drop the [options] block the Arch image appends to strip docs, locales and
+#   man pages (archlinux-docker's pacman-conf.d-noextract.conf). It starts at
+#   the second [options] header and runs to the end of the file.
+# - Add Omarchy's repository above [core], as Omarchy's own pacman.conf does.
+#   SigLevel stays Required DatabaseOptional.
+# - Take Arch's packages from Omarchy's stable mirror, the snapshot of Arch that
+#   Omarchy's stable channel is tested against (mirrorlist-stable in the omarchy
+#   package). omarchy-apply-system installs that mirrorlist anyway; building
+#   from the live Arch mirror would give newer packages than Omarchy stable
+#   ships (on 2026-11-23, Hyprland 0.57 instead of 0.56).
+# Then a keyring: the image ships Arch's keys without a master key. Omarchy's
+# key comes from the vendored files, checked against their pinned sums, and
+# must be the one fingerprint keys/README.md names.
+RUN --mount=type=bind,source=keys,target=/run/omarchy-keys \
+    omarchy_fpr=40DFB630FF42BCFFB047046CF0134EE680CAC571 && \
+    awk '/^\[options\]/ && seen++ { exit } { print }' /etc/pacman.conf >/etc/pacman.conf.new && \
+    mv /etc/pacman.conf.new /etc/pacman.conf && \
+    ! grep -q '^[[:space:]]*NoExtract' /etc/pacman.conf && \
+    sed -i '/^\[core\]/i [omarchy]\nServer = https://pkgs.omarchy.org/stable/$arch\n' /etc/pacman.conf && \
+    grep -qx 'SigLevel    = Required DatabaseOptional' /etc/pacman.conf && \
+    echo 'Server = https://stable-mirror.omarchy.org/$repo/os/$arch' >/etc/pacman.d/mirrorlist && \
+    (cd /run/omarchy-keys && sha256sum --strict -c SHA256SUMS) && \
+    grep -qx "$omarchy_fpr:4:" /run/omarchy-keys/omarchy-trusted && \
+    pacman-key --init && \
+    pacman-key --populate archlinux && \
+    pacman-key --populate-from /run/omarchy-keys --populate omarchy && \
+    pacman-key --list-keys "$omarchy_fpr" >/dev/null
+
+# Packages are cached across builds in a BuildKit cache mount, which never
+# becomes part of the image.
+#
+# Sync and upgrade, reinstalling every package the base image has so the files
+# its NoExtract stripped come back (one transaction: `pacman -Qqn` needs the
+# synced databases to tell native packages apart). Then the guard: no package
+# may be newer than the repository pacman takes it from, i.e. the first one
+# `pacman -Sl` lists it in, which then shows "[installed: <other version>]".
+RUN --mount=type=cache,target=/var/cache/pacman/pkg,sharing=locked \
+    pacman -Sy --noconfirm && \
+    native=$(pacman -Qqn) && test -n "$native" && \
+    pacman -Su --noconfirm $native && \
+    test -z "$(pacman -Qqm)" && \
+    newer=$(pacman -Sl | awk '!seen[$2]++ && / \[installed: /') && \
+    { [ -z "$newer" ] || { echo "newer than Omarchy's snapshot:"; echo "$newer"; exit 1; }; }
+
+# omarchy-pkg-defaults lives in the omarchy package, so omarchy goes first.
+# mesa provides libva-mesa-driver (merged into it in 2024); naming it keeps the
+# driver list readable. No kernel: the container runs on the host's.
+RUN --mount=type=cache,target=/var/cache/pacman/pkg,sharing=locked \
+    pacman -S --noconfirm --needed omarchy && \
+    defaults=$(OMARCHY_PATH=/usr/share/omarchy omarchy-pkg-defaults x86) && \
+    test -n "$defaults" && \
+    pacman -S --noconfirm --needed $defaults \
+      mesa vulkan-radeon vulkan-intel intel-media-driver libva-mesa-driver
+
+# Omarchy's image build (install/helpers/image-target.sh): declare the target
+# in a root-owned manifest, then run the system setup with provisioning and
+# hardware deferred to the first boot.
+#
+# Workaround, snapper: install/config/snapper.sh runs `snapper create-config /`
+# when /etc/snapper/configs/root is missing. snapper can't make a config on the
+# container's overlay root ("do not know about fstype 'overlay'"), the step
+# fails, and under set -e that stops omarchy-apply-system before services,
+# firewall, the login and post-install steps. An empty config file makes the
+# step skip create-config; it then installs Omarchy's own snapper template over
+# it, so the file ends up as on any Omarchy machine, without the .snapshots
+# subvolume overlay can't have. Upstream: snapper.sh could skip create-config
+# on a root that isn't btrfs.
+RUN --mount=type=cache,target=/var/cache/pacman/pkg,sharing=locked \
+    printf 'format=1\nplatform=x86\n' | install -D -m 0644 /dev/stdin /var/lib/omarchy/image/target && \
+    install -D -m 0644 /dev/null /etc/snapper/configs/root && \
+    { omarchy-apply-system --defer-provisioning --first-install || \
+      { tail -n 60 /var/log/omarchy-install.log; exit 1; }; }
+
+# Seal: nothing that belongs to one machine. (The package cache was a cache
+# mount, so the image has none; tests/boot.sh checks.)
+# - An empty machine-id (not a missing one): systemd treats the first boot as
+#   first boot and makes one.
+# - No ssh host keys.
+# - No pacman keyring. Its master key would be shared by every container made
+#   from the image, so ask for one at first boot the way Omarchy's image builds
+#   do: omarchy-provision-hardware makes it when this request exists. (On x86
+#   omarchy-apply-system leaves the keyring alone and asks for none; only
+#   this image removes it.)
+# - No .pacnew files: reinstalling pacman after pacman.conf and the mirrorlist
+#   were edited above left Arch's stock copies; omarchy-apply-system has since
+#   installed Omarchy's own versions of both.
+RUN rm -f /etc/ssh/ssh_host_* && \
+    : >/etc/machine-id && \
+    rm -rf /etc/pacman.d/gnupg && \
+    install -m 0644 /dev/null /var/lib/omarchy/image/pacman-keyring && \
+    rm -f /etc/pacman.conf.pacnew /etc/pacman.d/mirrorlist.pacnew && \
+    find /tmp /var/tmp -mindepth 1 -delete
+
+FROM scratch
+COPY --from=system / /
+ENV container=docker
+STOPSIGNAL SIGRTMIN+3
+CMD ["/usr/lib/systemd/systemd"]
