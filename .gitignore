@@ -11,3 +11,6 @@ notes/
 
 # Superpowers SDD workspaces (local scratch)
 .superpowers/
+
+# Local caches (verify-base stamps)
+.cache/

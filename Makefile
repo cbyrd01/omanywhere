@@ -28,7 +28,7 @@ IMAGE ?= omanywhere:dev
 BASE_IMAGE := $(shell awk '/^FROM .* AS system$$/ { print $$2; exit }' image/Containerfile)
 
 verify-base: tools
-	scripts/verify-base $(BASE_IMAGE)
+	TOOLS_IMAGE=$(TOOLS_IMAGE) scripts/verify-base $(BASE_IMAGE)
 
 image: verify-base
 	docker build -f image/Containerfile -t $(IMAGE) image

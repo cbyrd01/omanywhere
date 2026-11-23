@@ -8,13 +8,18 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "$here/lib.sh"
 
 name=omanywhere-test-boot-$$
-trap 'cleanup "$name"' EXIT
+seal=$name-seal
+check_name "$seal"
+trap 'cleanup "$name" "$seal"' EXIT
+
+# The fingerprint of Omarchy's package signing key (image/keys/README.md).
+omarchy_fpr=40DFB630FF42BCFFB047046CF0134EE680CAC571
 
 docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "image $IMAGE not found (run make image)"
 
 # The image as shipped, before anything boots it: no per-machine identity, no
 # pacman keyring and no package cache.
-docker run --rm --network none --entrypoint /bin/bash "$IMAGE" -c '
+docker run --rm --name "$seal" --network none --entrypoint /bin/bash "$IMAGE" -c '
   set -e
   shopt -s nullglob
   keys=(/etc/ssh/ssh_host_*)
@@ -27,43 +32,44 @@ docker run --rm --network none --entrypoint /bin/bash "$IMAGE" -c '
 pass "sealed: no ssh host keys, empty machine-id, no keyring, no package cache"
 
 start_container "$name"
-wait_running "$name" 120 || fail "systemd did not reach running or degraded in 120 s"
+state=$(wait_running "$name" 120) || fail "systemd did not reach running or degraded in 120 s"
 wait_settled "$name" 60 || fail "systemd still had jobs queued 60 s after boot"
-pass "systemd is $(cexec "$name" systemctl is-system-running || true)"
-
-cexec "$name" pacman -Q omarchy >/dev/null 2>&1 || fail "omarchy is not installed"
-pass "$(cexec "$name" pacman -Q omarchy 2>/dev/null)"
+pass "systemd is $state"
 
 # Omarchy 4.5 is built for Hyprland 0.56, which Omarchy's stable mirror serves.
 # Anything else means the build drifted back to Arch's live mirrors.
-hyprland=$(cexec "$name" pacman -Q hyprland 2>/dev/null) || fail "hyprland is not installed"
-[[ $hyprland == "hyprland 0.56."* ]] || fail "expected Hyprland 0.56.x from Omarchy's stable mirror, got: $hyprland"
-pass "$hyprland"
+packages=$(cexec "$name" pacman -Q omarchy hyprland 2>/dev/null) || fail "omarchy or hyprland is not installed: $packages"
+{ read -r _ omarchy_version && read -r _ hyprland_version; } <<<"$packages"
+[[ $hyprland_version == 0.56.* ]] || fail "expected Hyprland 0.56.x from Omarchy's stable mirror, got $hyprland_version"
+pass "omarchy $omarchy_version, hyprland $hyprland_version"
 
-# omarchy-provision-hardware retires the build manifest on the first boot.
-cexec "$name" test ! -e /var/lib/omarchy/image/target || fail "the image-target manifest was not retired at boot"
-cexec "$name" test -f /var/lib/omarchy/image/target.booted || fail "no retired manifest (target.booted)"
+# omarchy-provision-hardware retires the build manifest on the first boot,
+# then makes the pacman keyring the image asked for.
+cexec "$name" test ! -e /var/lib/omarchy/image/target -a -f /var/lib/omarchy/image/target.booted ||
+  fail "the image-target manifest was not retired to target.booted at boot"
 pass "image-target manifest retired to target.booted"
+# Checked on its own: omarchy-provision-hardware.service is allowed to fail
+# (below), and a failed keyring exits 75 like a failed hardware step.
+cexec "$name" test ! -e /var/lib/omarchy/image/pacman-keyring ||
+  fail "the pacman keyring request is still pending (no keyring made at first boot)"
+cexec "$name" pacman-key --list-keys "$omarchy_fpr" >/dev/null 2>&1 ||
+  fail "the first-boot pacman keyring lacks Omarchy's key $omarchy_fpr"
+pass "first-boot pacman keyring made, with Omarchy's key"
 
 # Every failed (or restart-looping) unit must be in the allow list, which
 # carries a reason for each.
-mapfile -t allowed < <(sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' "$here/allowed-failed.txt")
-mapfile -t failed < <(failed_units "$name")
-unexpected=()
-for unit in "${failed[@]}"; do
-  [[ " ${allowed[*]} " == *" $unit "* ]] || unexpected+=("$unit")
-done
-for unit in "${allowed[@]}"; do
-  [[ " ${failed[*]} " == *" $unit "* ]] || echo "note: $unit is allowed to fail but did not"
-done
-if ((${#unexpected[@]})); then
-  for unit in "${unexpected[@]}"; do
+failed=$(failed_units "$name" | sort)
+allowed=$(sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' "$here/allowed-failed.txt" | sort)
+unexpected=$(comm -13 <(echo "$allowed") <(echo "$failed"))
+comm -23 <(echo "$allowed") <(echo "$failed") | sed 's/^/note: allowed to fail but did not: /'
+if [[ -n $unexpected ]]; then
+  while read -r unit; do
     echo "--- $unit" >&2
     cexec "$name" systemctl status --no-pager --lines 10 "$unit" >&2 || true
-  done
-  fail "units failed that tests/allowed-failed.txt does not allow: ${unexpected[*]}"
+  done <<<"$unexpected"
+  fail "units failed that tests/allowed-failed.txt does not allow: ${unexpected//$'\n'/ }"
 fi
-pass "failed units are all allowed (${#failed[@]}: ${failed[*]:-none})"
+pass "failed units are all allowed ($(grep -c . <<<"$failed"): ${failed//$'\n'/ })"
 
 # A clean systemd shutdown, not the SIGKILL docker sends after the timeout.
 start=$(date +%s%N)

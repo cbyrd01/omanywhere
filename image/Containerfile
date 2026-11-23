@@ -6,7 +6,12 @@
 
 # Arch Linux's official image, pinned by digest. `make verify-base` checks its
 # cosign signature, and reads the ref from this line.
-FROM ghcr.io/archlinux/archlinux:base-20261119.0.628508@sha256:6b8c389a7807833317f751cfb9e79066ac71e04b09df8fb46fb3b75e0f4db1d3 AS system
+#
+# Keep this base dated at or before Omarchy's stable snapshot of Arch (below):
+# a newer base has packages newer than the snapshot, and the build would have
+# to downgrade them. The snapshot's core.db was last modified 2026-10-22; the
+# build fails if any installed package is newer than its repository.
+FROM ghcr.io/archlinux/archlinux:base-20261021.0.614159@sha256:09d7c61fa6a0b6ec21020d75dec1cf901208ee601407fe6ef0f7988c05b94d19 AS system
 
 SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
 
@@ -42,24 +47,27 @@ RUN --mount=type=bind,source=keys,target=/run/omarchy-keys \
 # Packages are cached across builds in a BuildKit cache mount, which never
 # becomes part of the image.
 #
-# Sync, then reinstall every package the base image has, so the files its
-# NoExtract stripped come back. -uu allows downgrades: the base image (Arch,
-# 2026-11-19) is newer than Omarchy's stable snapshot, so this moves it back to
-# the snapshot's versions (68 packages on 2026-11-23, glibc and systemd among
-# them). It is -Syuu split in two because `pacman -Qqn` needs the synced
-# databases to tell native packages apart.
+# Sync and upgrade, reinstalling every package the base image has so the files
+# its NoExtract stripped come back (one transaction: `pacman -Qqn` needs the
+# synced databases to tell native packages apart). Then the guard: no package
+# may be newer than the repository pacman takes it from, i.e. the first one
+# `pacman -Sl` lists it in, which then shows "[installed: <other version>]".
 RUN --mount=type=cache,target=/var/cache/pacman/pkg,sharing=locked \
     pacman -Sy --noconfirm && \
-    pacman -Suu --noconfirm $(pacman -Qqn) && \
-    test -z "$(pacman -Qqm)"
+    native=$(pacman -Qqn) && test -n "$native" && \
+    pacman -Su --noconfirm $native && \
+    test -z "$(pacman -Qqm)" && \
+    newer=$(pacman -Sl | awk '!seen[$2]++ && / \[installed: /') && \
+    { [ -z "$newer" ] || { echo "newer than Omarchy's snapshot:"; echo "$newer"; exit 1; }; }
 
 # omarchy-pkg-defaults lives in the omarchy package, so omarchy goes first.
 # mesa provides libva-mesa-driver (merged into it in 2024); naming it keeps the
 # driver list readable. No kernel: the container runs on the host's.
 RUN --mount=type=cache,target=/var/cache/pacman/pkg,sharing=locked \
     pacman -S --noconfirm --needed omarchy && \
-    pacman -S --noconfirm --needed \
-      $(OMARCHY_PATH=/usr/share/omarchy omarchy-pkg-defaults x86) \
+    defaults=$(OMARCHY_PATH=/usr/share/omarchy omarchy-pkg-defaults x86) && \
+    test -n "$defaults" && \
+    pacman -S --noconfirm --needed $defaults \
       mesa vulkan-radeon vulkan-intel intel-media-driver libva-mesa-driver
 
 # Omarchy's image build (install/helpers/image-target.sh): declare the target
@@ -76,14 +84,13 @@ RUN --mount=type=cache,target=/var/cache/pacman/pkg,sharing=locked \
 # subvolume overlay can't have. Upstream: snapper.sh could skip create-config
 # on a root that isn't btrfs.
 RUN --mount=type=cache,target=/var/cache/pacman/pkg,sharing=locked \
-    install -d -m 0755 /var/lib/omarchy/image && \
-    printf 'format=1\nplatform=x86\n' >/var/lib/omarchy/image/target && \
-    chmod 0644 /var/lib/omarchy/image/target && \
+    printf 'format=1\nplatform=x86\n' | install -D -m 0644 /dev/stdin /var/lib/omarchy/image/target && \
     install -D -m 0644 /dev/null /etc/snapper/configs/root && \
     { omarchy-apply-system --defer-provisioning --first-install || \
       { tail -n 60 /var/log/omarchy-install.log; exit 1; }; }
 
-# Seal: nothing that belongs to one machine, and no package cache.
+# Seal: nothing that belongs to one machine. (The package cache was a cache
+# mount, so the image has none; tests/boot.sh checks.)
 # - An empty machine-id (not a missing one): systemd treats the first boot as
 #   first boot and makes one.
 # - No ssh host keys.
@@ -100,7 +107,6 @@ RUN rm -f /etc/ssh/ssh_host_* && \
     rm -rf /etc/pacman.d/gnupg && \
     install -m 0644 /dev/null /var/lib/omarchy/image/pacman-keyring && \
     rm -f /etc/pacman.conf.pacnew /etc/pacman.d/mirrorlist.pacnew && \
-    pacman -Scc --noconfirm && \
     find /tmp /var/tmp -mindepth 1 -delete
 
 FROM scratch

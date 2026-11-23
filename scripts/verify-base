@@ -1,29 +1,41 @@
 #!/bin/bash
 # Verify that IMAGE_REF is an official Arch Linux image: keyless-signed with
 # cosign by Arch's own GitLab CI release pipeline (archlinux-docker, a v*.0.*
-# tag). Usage: scripts/verify-base IMAGE_REF
+# tag). Usage: TOOLS_IMAGE=omanywhere-tools scripts/verify-base IMAGE_REF
+# (make verify-base passes both).
 #
 # Pass a digest-pinned ref, the same one the Containerfile builds FROM, so the
-# signature checked is the signature of exactly what gets built.
+# signature checked is the signature of exactly what gets built. A digest's
+# verdict can't change, so a verified one is stamped in .cache/verified/ and
+# not checked again; that also lets cached rebuilds run offline.
 set -euo pipefail
 
-if (($# != 1)); then
-  echo "Usage: $0 IMAGE_REF" >&2
-  exit 2
-fi
-
-TOOLS_IMAGE=${TOOLS_IMAGE:-omanywhere-tools}
+IMAGE_REF=${1:?usage: verify-base IMAGE_REF}
+TOOLS_IMAGE=${TOOLS_IMAGE:?set TOOLS_IMAGE to the tools image (make verify-base does)}
 identity='https://gitlab\.archlinux\.org/archlinux/archlinux-docker//\.gitlab-ci\.yml@refs/tags/v[0-9]+\.0\.[0-9]+'
 issuer=https://gitlab.archlinux.org
+
+stamp=
+if [[ $IMAGE_REF == *@sha256:* ]]; then
+  stamp=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.cache/verified/sha256-${IMAGE_REF##*@sha256:}
+  if [[ -f $stamp ]]; then
+    echo "verified (cached): $IMAGE_REF"
+    exit 0
+  fi
+fi
 
 # cosign needs the network: it reads the signature from the registry. It runs
 # in the tools image, not in the image it checks.
 if docker run --rm "$TOOLS_IMAGE" cosign verify \
   --certificate-identity-regexp "$identity" \
   --certificate-oidc-issuer "$issuer" \
-  "$1" >/dev/null; then
-  echo "verified: $1 is signed by Arch Linux's archlinux-docker release pipeline"
+  "$IMAGE_REF" >/dev/null; then
+  echo "verified: $IMAGE_REF is signed by Arch Linux's archlinux-docker release pipeline"
+  if [[ -n $stamp ]]; then
+    mkdir -p "$(dirname "$stamp")"
+    : >"$stamp"
+  fi
 else
-  echo "NOT verified: $1 has no valid Arch Linux signature" >&2
+  echo "NOT verified: $IMAGE_REF has no valid Arch Linux signature" >&2
   exit 1
 fi
