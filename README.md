@@ -51,7 +51,20 @@ make hooks   # once per clone: gitleaks scans each commit's staged changes
 make lint    # shellcheck + gitleaks over the full history (what CI runs)
 make image   # cosign-verify the Arch base, then build omanywhere:dev (image/Containerfile)
 make test-boot  # boot the image under systemd with no privilege and check it (tests/boot.sh)
+make test-owner # the owner account, ssh, and recreating over the same volumes (tests/owner.sh)
+make test       # both
 ```
+
+The image adds one package of its own, `omanywhere` (`package/omanywhere/`), built in the
+image's `package` stage. It makes the owner account at boot from `OMANYWHERE_USER`,
+`OMANYWHERE_UID`, `OMANYWHERE_AUTHORIZED_KEYS`, `OMANYWHERE_PASSWORD` and `TZ`, given with
+`docker run -e` or as files under `/run/secrets/` (see `package/omanywhere/owner`).
+The keys given to the container are authoritative and set again on every boot (sshd reads them
+from `/run/omanywhere/authorized_keys/`); keys the owner adds to `~/.ssh/authorized_keys`
+themselves are kept. State lives in two named volumes, `/home` and `/var/lib/omanywhere` (the
+machine-id and the ssh host key); use named volumes, which Docker fills from the image. A
+bind-mounted state directory starts empty, so its first boot can't keep a machine-id and is
+degraded; from the second boot on it behaves like a named volume.
 
 The tools (cosign, gitleaks, shellcheck) come from Arch Linux's signed repositories,
 installed in a small image built from `tools/Containerfile`.

@@ -1,0 +1,18 @@
+# The container's owner account, made from the container's inputs on every
+# boot (see /usr/lib/omanywhere/owner). Logins wait for it: sshd, which
+# requires it, and the desktop session, which orders itself after this unit.
+[Unit]
+Description=Omanywhere owner account
+Documentation=file:/usr/lib/omanywhere/owner
+After=systemd-sysusers.service systemd-tmpfiles-setup.service
+Before=sshd.service systemd-user-sessions.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# The inputs given with docker run -e, from the container's environment.
+PassEnvironment=OMANYWHERE_USER OMANYWHERE_UID OMANYWHERE_AUTHORIZED_KEYS OMANYWHERE_PASSWORD TZ
+ExecStart=/usr/lib/omanywhere/owner
+
+[Install]
+WantedBy=multi-user.target

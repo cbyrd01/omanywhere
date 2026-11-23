@@ -1,16 +1,4 @@
 # Units that may fail when the image boots, one per line, each with a reason.
-# Task 3 (the omanywhere package) deals with each of these and empties this list.
-# Seen with Docker 29's default capabilities and seccomp profile (no SYS_ADMIN,
-# no NET_ADMIN, no user namespaces) on systemd 262.
-
-bluetooth.service                  # no Bluetooth controller: bluetoothd can't reach the kernel's management socket; Omarchy's bluetooth.sh starts it at first boot
-limine-snapper-sync.service        # restart loop every 10 s: CapabilityBoundingSet=CAP_SYS_ADMIN, which the container lacks ("Failed to keep CAP_SYS_ADMIN"); no Limine or btrfs snapshots here anyway
-linux-modules-cleanup.service      # the image has no kernel, so /usr/lib/modules doesn't exist; the container runs on the host's kernel
-omarchy-provision-hardware.service # the deferred hardware queue probes the host's hardware; nvidia.sh tries to install NVIDIA drivers from [multilib], which has no sync database in the image, and fails (exit 75, retried every boot)
-power-profiles-daemon.service      # PrivateUsers= needs a user namespace, which Docker's seccomp profile refuses without SYS_ADMIN; no power profiles to manage in a container
-systemd-oomd.service               # systemd 262 can't keep CAP_SYS_ADMIN when it switches to User=systemd-oom ("Failed to keep CAP_SYS_ADMIN")
-systemd-oomd.socket                # its service hit the start limit (above)
-systemd-resolved.service           # as systemd-oomd: "Failed to keep CAP_SYS_ADMIN" switching to User=systemd-resolve; Docker provides /etc/resolv.conf
-systemd-resolved-monitor.socket    # its service hit the start limit (above)
-systemd-resolved-varlink.socket    # its service hit the start limit (above)
-ufw.service                        # loading netfilter rules and sysctls needs NET_ADMIN, which the container doesn't have; the host's firewall applies
+# Empty: the omanywhere package skips the units that have no work in a
+# container (package/omanywhere/container-units), so a clean boot has no failed
+# unit and systemd reports `running`. Add a unit here only with its reason.

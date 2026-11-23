@@ -1,0 +1,10 @@
+#!/bin/bash
+# Omanywhere: put DisableSandboxFilesystem back in /etc/pacman.conf after
+# omarchy-refresh-pacman (or omarchy-channel-set) has copied Omarchy's own over
+# it. In this container pacman can't apply its Landlock download sandbox (it
+# sets no_new_privs too late for root without CAP_SYS_ADMIN), so without the
+# line every download fails; Arch's official container image sets it for the
+# same reason, and image/Containerfile in omanywhere has the details.
+# Installed once by omanywhere-owner.service; yours to keep, change or delete.
+grep -qx 'DisableSandboxFilesystem' /etc/pacman.conf ||
+  sudo sed -i '/^\[options\]$/a DisableSandboxFilesystem' /etc/pacman.conf

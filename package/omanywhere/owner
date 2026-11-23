@@ -1,0 +1,177 @@
+#!/bin/bash
+# Makes the container's owner: the one account that logs in over ssh and runs
+# Omarchy's desktop. omanywhere-owner.service runs it on every boot, before
+# sshd (which requires it) and the session, and it ends by writing the name to
+# /run/omanywhere/owner.
+#
+# Inputs. Each is read from the first of these that has it:
+#   1. a file under /run/secrets/ (a Docker or Compose secret) named after the
+#      variable, such as /run/secrets/OMANYWHERE_USER. The two secrets also
+#      answer to the short names /run/secrets/authorized_keys and
+#      /run/secrets/password, checked after the long ones;
+#   2. the container's environment (docker run -e), which the unit passes in
+#      with PassEnvironment=;
+#   3. the default.
+# A file's trailing newlines are dropped. The password only ever goes to
+# chpasswd on its standard input: never into an argument or the journal.
+#
+#   OMANYWHERE_USER             login name (default omarchy)
+#   OMANYWHERE_UID              uid, and gid of the user's own group (default 1000)
+#   OMANYWHERE_AUTHORIZED_KEYS  ssh public keys, one per line (required)
+#   OMANYWHERE_PASSWORD         password for sudo and the lock screen (optional;
+#                               without one the password is locked)
+#   TZ                          timezone, such as Europe/Paris (optional)
+#
+# /etc comes from the image, so a new container has no account: it is made
+# again on every boot of a new container, with the same uid, over the home the
+# /home volume kept. The password is set from the inputs each boot. The input
+# keys go to /run/omanywhere/authorized_keys/USER, which sshd reads beside
+# ~/.ssh/authorized_keys (sshd_config.d/10-omanywhere.conf): they are
+# authoritative and set again each boot, and keys the owner adds to
+# ~/.ssh/authorized_keys stay theirs. Omarchy's first-install user setup runs
+# once per home, not once per container.
+set -euo pipefail
+
+fail() {
+  echo "$*" >&2
+  exit 1
+}
+
+# input NAME DEFAULT [SHORT]: the input's value (see the top of this file).
+input() {
+  local name=$1 default=$2 short=${3:-} file
+  for file in "/run/secrets/$name" ${short:+"/run/secrets/$short"}; do
+    if [[ -f $file ]]; then
+      cat -- "$file"
+      return
+    fi
+  done
+  printf '%s' "${!name-$default}"
+}
+
+# A copy of user_groups in /usr/bin/omarchy-provision-owner, Omarchy's own rule
+# for the owner's groups: wheel, plus the groups system setup recorded, less
+# docker (always opt-in), less input unless a package that needs raw input is
+# installed, less groups this system lacks.
+user_groups() {
+  local groups=wheel group recorded=/var/lib/omarchy/provisioning/groups
+  [[ -f $recorded ]] || {
+    echo "$groups"
+    return
+  }
+  while IFS= read -r group; do
+    [[ -n $group && $group != docker ]] || continue
+    if [[ $group == input ]] && ! pacman -Qq xpadneo-dkms &>/dev/null && ! pacman -Qq ydotool &>/dev/null; then
+      continue
+    fi
+    getent group "$group" >/dev/null || continue
+    [[ ,$groups, == *",$group,"* ]] || groups+=",$group"
+  done <"$recorded"
+  echo "$groups"
+}
+
+user=$(input OMANYWHERE_USER omarchy)
+uid=$(input OMANYWHERE_UID 1000)
+keys=$(input OMANYWHERE_AUTHORIZED_KEYS "" authorized_keys)
+password=$(input OMANYWHERE_PASSWORD "" password)
+tz=$(input TZ "")
+# Nothing this runs needs them in its environment, least of all the password.
+unset OMANYWHERE_USER OMANYWHERE_UID OMANYWHERE_AUTHORIZED_KEYS OMANYWHERE_PASSWORD TZ
+
+# Check every input before changing anything.
+[[ $user =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || fail "OMANYWHERE_USER '$user' is not a valid login name"
+if [[ ! $uid =~ ^[1-9][0-9]{3,4}$ ]] || ((uid > 60000)); then
+  fail "OMANYWHERE_UID '$uid' is not a uid from 1000 to 60000"
+fi
+# Every line that isn't blank or a comment must be a public key on its own.
+valid_keys=()
+number=0
+while IFS= read -r line; do
+  number=$((number + 1))
+  [[ $line =~ ^[[:space:]]*(#|$) ]] && continue
+  ssh-keygen -l -f /dev/stdin <<<"$line" >/dev/null 2>&1 ||
+    fail "OMANYWHERE_AUTHORIZED_KEYS line $number is not an ssh public key"
+  valid_keys+=("$line")
+done <<<"$keys"
+((${#valid_keys[@]})) ||
+  fail "no authorized key: set OMANYWHERE_AUTHORIZED_KEYS or mount /run/secrets/authorized_keys; ssh is the only way in"
+[[ $password != *$'\n'* ]] || fail "OMANYWHERE_PASSWORD has more than one line"
+if [[ -n $tz && ($tz == *..* || ! -f /usr/share/zoneinfo/$tz) ]]; then
+  fail "TZ '$tz' is not a timezone in /usr/share/zoneinfo"
+fi
+
+home=/home/$user
+if getent passwd "$user" >/dev/null; then
+  # This container made the account on an earlier boot.
+  [[ $(id -u "$user") == "$uid" ]] || fail "$user exists with uid $(id -u "$user"), not $uid"
+else
+  if getent passwd "$uid" >/dev/null; then
+    fail "uid $uid already belongs to $(getent passwd "$uid" | cut -d: -f1)"
+  fi
+  if gid=$(getent group "$user" | cut -d: -f3) && [[ -n $gid ]]; then
+    [[ $gid == "$uid" ]] || fail "group $user exists with gid $gid, not $uid"
+  else
+    groupadd -g "$uid" "$user"
+  fi
+  create_home=-m
+  if [[ -d $home ]]; then
+    # The /home volume kept it from an earlier container: it must be ours.
+    [[ $(stat -c %u "$home") == "$uid" ]] || fail "$home belongs to uid $(stat -c %u "$home"), not $uid"
+    create_home=-M
+  fi
+  useradd "$create_home" -d "$home" -u "$uid" -g "$uid" -s /bin/bash "$user"
+fi
+usermod -aG "$(user_groups)" "$user"
+echo "Owner $user (uid $uid) in groups $(id -nG "$user")"
+
+if [[ -n $password ]]; then
+  printf '%s:%s\n' "$user" "$password" | chpasswd
+else
+  passwd -l "$user" >/dev/null
+  echo "No OMANYWHERE_PASSWORD: $user's password is locked, so sudo and the lock screen can't be used"
+fi
+
+# Root's, in a root-owned directory: sshd's StrictModes accepts nothing else.
+install -d -m 0755 /run/omanywhere /run/omanywhere/authorized_keys
+printf '%s\n' "${valid_keys[@]}" | install -m 0644 /dev/stdin "/run/omanywhere/authorized_keys/$user"
+echo "Authorized ${#valid_keys[@]} key(s) for $user"
+
+if [[ -n $tz ]]; then
+  systemd-firstboot --force --timezone="$tz"
+fi
+
+# as_owner CMD...: run CMD as the owner, in a clean environment with the
+# owner's HOME, USER, LOGNAME and SHELL. setpriv, not runuser: runuser opens a
+# PAM session, whose pam_systemd login session waits for
+# systemd-user-sessions.service, which waits for this unit.
+as_owner() {
+  setpriv --reuid="$user" --regid="$uid" --init-groups --reset-env -- "$@"
+}
+
+# --first-install marks Omarchy's shipped migrations done, which is right only
+# for a new home, and it forces the setup to run even when its finalize-user
+# marker exists. So check Omarchy's marker first, the way it does.
+if as_owner omarchy-done check finalize-user; then
+  echo "Omarchy's user setup already ran for $home"
+else
+  echo "Running Omarchy's first-install user setup for $user"
+  as_owner omarchy-provision-user --first-install
+fi
+
+# omarchy-refresh-pacman (behind omarchy-channel-set too) puts Omarchy's
+# pacman.conf back, without the line this container needs (image/Containerfile
+# has why); its pre-refresh-pacman hook is where an owner customizes it. Put
+# the hook in place once: it is the owner's to keep, change or delete.
+hook=.config/omarchy/hooks/pre-refresh-pacman.d/omanywhere-pacman-sandbox
+if ! as_owner test -e "$home/$hook"; then
+  as_owner install -D -m 0644 /usr/lib/omanywhere/pre-refresh-pacman "$home/$hook"
+  echo "Installed the pre-refresh-pacman hook ~/$hook"
+fi
+
+# systemd writes the machine-id through /etc/machine-id into the state volume
+# when it finds an empty file there (see /usr/lib/tmpfiles.d/omanywhere.conf).
+if [[ ! -s /var/lib/omanywhere/machine-id ]]; then
+  echo "Warning: the state volume had no machine-id file at boot, so this boot's machine-id isn't kept; the next boot's will be" >&2
+fi
+
+printf '%s\n' "$user" | install -m 0644 /dev/stdin /run/omanywhere/owner

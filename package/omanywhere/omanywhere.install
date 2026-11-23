@@ -1,0 +1,4 @@
+post_install() {
+  # Arch packages don't enable their units; omanywhere's are the point of it.
+  systemctl preset omanywhere-owner.service sshd.service
+}

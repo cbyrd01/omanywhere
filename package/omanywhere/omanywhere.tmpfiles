@@ -1,0 +1,13 @@
+# Omanywhere's state volume. The image already has all of this, and Docker
+# copies it into a new named volume; these lines cover a volume that starts
+# empty, such as a bind-mounted host directory.
+d /var/lib/omanywhere 0755 root root -
+d /var/lib/omanywhere/ssh 0755 root root -
+# /etc/machine-id is a symlink to this file (image/Containerfile). systemd
+# writes the machine-id it makes into it when it finds it empty. When the file
+# is missing, systemd can only keep the id in memory, and that boot is
+# degraded (dbus-broker can't read a machine-id). This line can't help that
+# first boot, which has run before it; it makes the empty file, so the id is
+# kept from the second boot on. Named volumes, which Docker fills from the
+# image, have the file from the start.
+f /var/lib/omanywhere/machine-id 0444 root root -

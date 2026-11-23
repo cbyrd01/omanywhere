@@ -5,7 +5,7 @@ GIT_COMMON_DIR := $(shell git rev-parse --path-format=absolute --git-common-dir)
 TOOLS = docker run --rm --network none -v "$(CURDIR):$(CURDIR):ro" \
 	-v "$(GIT_COMMON_DIR):$(GIT_COMMON_DIR):ro" -w "$(CURDIR)" $(TOOLS_IMAGE)
 
-.PHONY: lint tools shellcheck secrets secrets-staged hooks verify-base image test-boot
+.PHONY: lint tools shellcheck secrets secrets-staged hooks verify-base image test test-boot test-owner
 
 lint: shellcheck secrets
 
@@ -25,13 +25,19 @@ hooks:
 
 IMAGE ?= omanywhere:dev
 # The base the Containerfile builds FROM, read from it so the ref lives in one place.
-BASE_IMAGE := $(shell awk '/^FROM .* AS system$$/ { print $$2; exit }' image/Containerfile)
+BASE_IMAGE := $(shell awk -F= '/^ARG BASE_IMAGE=/ { print $$2; exit }' image/Containerfile)
 
 verify-base: tools
 	TOOLS_IMAGE=$(TOOLS_IMAGE) scripts/verify-base $(BASE_IMAGE)
 
+# The repository root is the build context (.dockerignore trims it).
 image: verify-base
-	docker build -f image/Containerfile -t $(IMAGE) image
+	docker build -f image/Containerfile -t $(IMAGE) .
+
+test: test-boot test-owner
 
 test-boot: image
 	IMAGE=$(IMAGE) tests/boot.sh
+
+test-owner: image
+	IMAGE=$(IMAGE) tests/owner.sh
