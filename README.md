@@ -49,6 +49,8 @@ Everything runs in containers; the host needs only Docker and `make`.
 ```sh
 make hooks   # once per clone: gitleaks scans each commit's staged changes
 make lint    # shellcheck + gitleaks over the full history (what CI runs)
+make image   # cosign-verify the Arch base, then build omanywhere:dev (image/Containerfile)
+make test-boot  # boot the image under systemd with no privilege and check it (tests/boot.sh)
 ```
 
 The tools (cosign, gitleaks, shellcheck) come from Arch Linux's signed repositories,

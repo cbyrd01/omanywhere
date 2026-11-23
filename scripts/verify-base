@@ -1,0 +1,29 @@
+#!/bin/bash
+# Verify that IMAGE_REF is an official Arch Linux image: keyless-signed with
+# cosign by Arch's own GitLab CI release pipeline (archlinux-docker, a v*.0.*
+# tag). Usage: scripts/verify-base IMAGE_REF
+#
+# Pass a digest-pinned ref, the same one the Containerfile builds FROM, so the
+# signature checked is the signature of exactly what gets built.
+set -euo pipefail
+
+if (($# != 1)); then
+  echo "Usage: $0 IMAGE_REF" >&2
+  exit 2
+fi
+
+TOOLS_IMAGE=${TOOLS_IMAGE:-omanywhere-tools}
+identity='https://gitlab\.archlinux\.org/archlinux/archlinux-docker//\.gitlab-ci\.yml@refs/tags/v[0-9]+\.0\.[0-9]+'
+issuer=https://gitlab.archlinux.org
+
+# cosign needs the network: it reads the signature from the registry. It runs
+# in the tools image, not in the image it checks.
+if docker run --rm "$TOOLS_IMAGE" cosign verify \
+  --certificate-identity-regexp "$identity" \
+  --certificate-oidc-issuer "$issuer" \
+  "$1" >/dev/null; then
+  echo "verified: $1 is signed by Arch Linux's archlinux-docker release pipeline"
+else
+  echo "NOT verified: $1 has no valid Arch Linux signature" >&2
+  exit 1
+fi
