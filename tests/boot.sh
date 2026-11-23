@@ -60,8 +60,9 @@ pass "first-boot pacman keyring made, with Omarchy's key"
 # carries a reason for each.
 failed=$(failed_units "$name" | sort)
 allowed=$(sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' "$here/allowed-failed.txt" | sort)
-unexpected=$(comm -13 <(echo "$allowed") <(echo "$failed"))
-comm -23 <(echo "$allowed") <(echo "$failed") | sed 's/^/note: allowed to fail but did not: /'
+# An empty list still echoes one blank line, which comm would report.
+unexpected=$(comm -13 <(echo "$allowed") <(echo "$failed") | sed '/^$/d')
+comm -23 <(echo "$allowed") <(echo "$failed") | sed -e '/^$/d' -e 's/^/note: allowed to fail but did not: /'
 if [[ -n $unexpected ]]; then
   while read -r unit; do
     echo "--- $unit" >&2

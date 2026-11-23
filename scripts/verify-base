@@ -6,8 +6,10 @@
 #
 # Pass a digest-pinned ref, the same one the Containerfile builds FROM, so the
 # signature checked is the signature of exactly what gets built. A digest's
-# verdict can't change, so a verified one is stamped in .cache/verified/ and
-# not checked again; that also lets cached rebuilds run offline.
+# verdict under one policy can't change, so a verified digest is stamped in
+# .cache/verified/, keyed on the digest, identity and issuer together, and not
+# checked again; that also lets cached rebuilds run offline. Changing the
+# policy changes the key, so the next run verifies again.
 set -euo pipefail
 
 IMAGE_REF=${1:?usage: verify-base IMAGE_REF}
@@ -17,7 +19,8 @@ issuer=https://gitlab.archlinux.org
 
 stamp=
 if [[ $IMAGE_REF == *@sha256:* ]]; then
-  stamp=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.cache/verified/sha256-${IMAGE_REF##*@sha256:}
+  key=$(sha256sum <<<"${IMAGE_REF##*@}|$identity|$issuer")
+  stamp=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.cache/verified/${key%% *}
   if [[ -f $stamp ]]; then
     echo "verified (cached): $IMAGE_REF"
     exit 0

@@ -76,13 +76,13 @@ wait_running() {
 }
 
 # wait_settled NAME TIMEOUT: wait until systemd's job queue has stayed empty for
-# two polls in a row, 0.5 s apart. Units started on demand after boot (over
+# 3 s (six polls in a row, 0.5 s apart). Units started on demand after boot (over
 # D-Bus, or by a restart) queue jobs of their own after the boot transaction.
 wait_settled() {
   # shellcheck disable=SC2016 # the script runs, and expands, in the container
   cexec "$1" timeout "$2" bash -c '
     quiet=0
-    while ((quiet < 2)); do
+    while ((quiet < 6)); do
       if [[ -z $(systemctl list-jobs --no-legend) ]]; then ((++quiet)); else quiet=0; fi
       sleep 0.5
     done' || {
