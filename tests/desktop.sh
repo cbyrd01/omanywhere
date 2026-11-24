@@ -140,9 +140,30 @@ pass "hyprctl -j monitors as $user: $count monitor(s) after $((i / 2)) s"
 check_no_physical "at start"
 cexec "$name" systemctl is-active --quiet omanywhere-session.service || fail "omanywhere-session.service is not active"
 
-# What Hyprland renders with, for the record.
+# What Hyprland renders with. When the owner can open a render node, the
+# renderer must be hardware: a software one (llvmpipe, softpipe, lavapipe)
+# there means the GPU is unused and the desktop is slow. The test asks the
+# question the session's start asks, as the owner (any renderD* it can open;
+# that is what decides LIBGL_ALWAYS_SOFTWARE), so it checks the outcome and
+# doesn't depend on files the session writes. With none (vkms, bochs-display)
+# the renderer is only reported: what Mesa falls back to isn't ours to assert.
 log=$(cexec "$name" bash -c "cat /run/user/$uid/hypr/*/hyprland.log" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g') || log=
-grep -E 'Starting backend for|\]: Renderer:' <<<"$log" | sed 's/^.*\] *: //' | sort -u | sed 's/^/info: /' || true
+renderers=$(grep -E '\]: Renderer:' <<<"$log" | sed 's/^.*\] *: //' | sort -u) || renderers=
+grep -E 'Starting backend for' <<<"$log" | sed 's/^.*\] *: //' | sort -u | sed 's/^/info: /' || true
+# shellcheck disable=SC2016 # the script runs, and expands, in the container
+render=$(as_owner bash -c 'for n in /dev/dri/renderD*; do [[ -r $n && -w $n ]] && { echo "$n"; exit 0; }; done; exit 1') || render=
+if [[ -n $render ]]; then
+  [[ -n $renderers ]] || fail "Hyprland's log has no 'Renderer:' line, so it can't be shown to use the GPU (render node $render)"
+  if grep -qiE 'llvmpipe|softpipe|lavapipe' <<<"$renderers"; then
+    echo "--- Hyprland's log lines about the backend and renderer" >&2
+    grep -iE 'Starting backend|Creating CDRMRenderer|Renderer:|llvmpipe|softpipe|lavapipe' <<<"$log" | cut -c1-200 | head -20 >&2 || true
+    fail "the owner can open the render node $render, but Hyprland renders in software: ${renderers//$'\n'/; }"
+  fi
+  pass "Hyprland renders on the GPU (render node $render): ${renderers//$'\n'/; }"
+else
+  [[ -z $renderers ]] || printf 'info: %s\n' "${renderers//$'\n'/; }"
+  echo "info: no render node the owner can open: renderer not asserted"
+fi
 
 # A screenshot that isn't one flat colour: Omarchy's wallpaper or bar drew.
 display=$(cexec "$name" bash -c "cd /run/user/$uid && ls wayland-[0-9]*" 2>/dev/null | grep -v lock | head -1) ||
