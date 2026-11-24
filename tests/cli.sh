@@ -2,6 +2,9 @@
 # CLI test: bin/omanywhere's up, status, ssh-config and down, with no device.
 #   - up refuses a bad name or --gpu, and fails before it creates anything when
 #     it has no ssh key;
+#   - the docker run arguments for each --gpu, and the warning for an NVIDIA
+#     card without NVIDIA's CDI device, from bin/omanywhere's own gpu_args
+#     against a made-up /dev/dri and sysfs (no desktop runs on a card here);
 #   - a key the container rejects fails the owner unit: up fails loudly with
 #     the unit's journal and leaves the container stopped, and up --key with a
 #     good key starts it again;
@@ -62,6 +65,9 @@ fails "not a valid name" up 'Bad_Name' --key "$tmp/id_ed25519.pub"
 fails "not a valid name" up '../x' --key "$tmp/id_ed25519.pub"
 fails "not a valid name" up "$(printf 'a%.0s' {1..40})" --key "$tmp/id_ed25519.pub"
 fails "--gpu" up "$name" --gpu sometimes --key "$tmp/id_ed25519.pub"
+for bad in dri: dri:card1 dri:/dev/dri/card dri:/dev/dri/renderD128 dri:/dev/dri/card1x dri:/dev/dri/../dri/card1 'dri:/dev/dri/card1 '; do
+  fails "--gpu" up "$name" --gpu "$bad" --key "$tmp/id_ed25519.pub"
+done
 fails "--drm-master" up "$name" --drm-master yes --key "$tmp/id_ed25519.pub"
 fails "--listen" up "$name" --listen 'not an address' --key "$tmp/id_ed25519.pub"
 fails "usage" frobnicate "$name"
@@ -72,6 +78,12 @@ printf 'listen=127.0.0.1\nport=2222\ngpu=sometimes\n' >"$OMANYWHERE_CONFIG_DIR/$
 fails "gpu" ssh-config "$name-x"
 printf 'listen=127.0.0.1\nport=99999\n' >"$OMANYWHERE_CONFIG_DIR/$name-x/settings"
 fails "port" ssh-config "$name-x"
+printf 'listen=127.0.0.1\nport=2222\ngpu=dri:/tmp/card1\n' >"$OMANYWHERE_CONFIG_DIR/$name-x/settings"
+fails "gpu" ssh-config "$name-x"
+# A card that has gone (vkms not loaded after a reboot, say) doesn't stop
+# ssh-config: only the up that makes the container needs it.
+printf 'listen=127.0.0.1\nport=2222\ngpu=dri:/dev/dri/card97\n' >"$OMANYWHERE_CONFIG_DIR/$name-x/settings"
+"$cli" ssh-config "$name-x" >/dev/null || fail "ssh-config refused gpu=dri:/dev/dri/card97 in the settings"
 rm -rf "${OMANYWHERE_CONFIG_DIR:?}/$name-x"
 # No key: no --key, and no agent to ask.
 out=$(SSH_AUTH_SOCK=$tmp/no-agent "$cli" up "$name" --gpu none 2>&1) && fail "up without a key succeeded: $out"
@@ -82,6 +94,67 @@ exists container "$container" && fail "a failed up left a container"
 exists volume "$home_volume" && fail "a failed up left a volume"
 [[ ! -e $config ]] || fail "a failed up left $config"
 pass "bad names, flags and no key are refused before anything is made"
+
+# --- The device arguments for each --gpu: bin/omanywhere's gpu_args, sourced,
+# against a made-up /dev/dri and sysfs. /dev/null stands in for each node: a
+# character device. card0 is vkms (no render node), card1 amdgpu with
+# renderD128, card2 nvidia with renderD129.
+fake=$tmp/fake
+for card in card0:vkms card1:amdgpu:renderD128 card2:nvidia:renderD129; do
+  IFS=: read -r node driver render <<<"$card"
+  mkdir -p "$fake/dri" "$fake/drivers/$driver" "$fake/devices/$node/drm"
+  ln -s /dev/null "$fake/dri/$node"
+  ln -s "$fake/drivers/$driver" "$fake/devices/$node/driver"
+  mkdir -p "$fake/class/drm/$node"
+  ln -s "$fake/devices/$node" "$fake/class/drm/$node/device"
+  [[ -z $render ]] || {
+    mkdir "$fake/devices/$node/drm/$render"
+    ln -s /dev/null "$fake/dri/$render"
+  }
+done
+# built MODE CDI: gpu_args MODE's device arguments, then what it said, with
+# Docker seeming to have NVIDIA's CDI device when CDI is yes. In a child
+# bash, so the CLI's names (name, config, ...) stay apart from the test's.
+built() {
+  # shellcheck disable=SC2016 # the script expands its own variables
+  bash -c '
+    source "$1"
+    dev_dri=$2/dri drm_class=$2/class/drm cdi=$3
+    cdi_gpu() { [[ $cdi == yes ]]; }
+    gpu_args "$4"
+    echo "devices: ${devices[*]}"' bash "$cli" "$fake" "$2" "$1" 2>&1 | sed '/^devices:/!s/^/said: /'
+}
+nvidia_warning="said: omanywhere: warning: /dev/dri/card2 is an NVIDIA card, and Docker has no NVIDIA CDI device (nvidia.com/gpu=all): the desktop can't use it, as NVIDIA's GBM backend comes only through CDI. Install nvidia-container-toolkit and use --gpu nvidia (see docs/usage.md)"
+expect_built() {
+  local got
+  got=$(built "$1" "$2")
+  [[ $got == "$3" ]] || fail "--gpu $1 (CDI: $2): got '$got', want '$3'"
+}
+expect_built dri:/dev/dri/card0 no "devices: --device /dev/dri/card0"
+expect_built dri:/dev/dri/card1 no "devices: --device /dev/dri/card1 --device /dev/dri/renderD128"
+expect_built dri:/dev/dri/card2 no "$nvidia_warning"$'\n'"devices: --device /dev/dri/card2 --device /dev/dri/renderD129"
+expect_built dri:/dev/dri/card2 yes "devices: --device /dev/dri/card2 --device /dev/dri/renderD129"
+expect_built dri no "$nvidia_warning"$'\n'"devices: --device /dev/dri"
+expect_built auto no "$nvidia_warning"$'\n'"devices: --device /dev/dri"
+expect_built auto yes "devices: --device nvidia.com/gpu=all"
+expect_built none no "devices: "
+out=$(built dri:/dev/dri/card9 no) || true
+[[ $out == *"--gpu dri:/dev/dri/card9: this host has no character device /dev/dri/card9"* && $out != *devices:* ]] ||
+  fail "--gpu dri:/dev/dri/card9, a card the host lacks, was not refused: $out"
+rm "$fake/dri/card2"
+expect_built dri no "devices: --device /dev/dri"
+pass "--gpu: dri:/dev/dri/cardN passes that card and its own render node; NVIDIA without CDI warns once; a missing card is refused"
+# The form is kept in the settings like the others.
+# shellcheck disable=SC2016 # the script expands its own variables
+out=$(bash -c '
+  source "$1"
+  settings=$2 listen=127.0.0.1 port=2222 gpu=dri:/dev/dri/card1 drm_master=
+  save_settings
+  gpu=
+  load_settings
+  echo "$gpu"' bash "$cli" "$tmp/settings") || fail "could not save and load the settings"
+[[ $out == dri:/dev/dri/card1 ]] || fail "gpu=dri:/dev/dri/card1 came back from the settings as '$out'"
+pass "gpu=dri:/dev/dri/card1 is saved in the settings and read back"
 
 # --- A key line the owner unit rejects: up fails loudly, with the unit's own
 # words, and the container is left stopped, not running without a way in.

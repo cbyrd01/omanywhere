@@ -6,8 +6,9 @@
 #   check    ExecCondition, as root. Picks the card and writes the choice to
 #            /run/omanywhere/session.env, or skips the session (exit 1) and
 #            says why. Hyprland can't run without a card: aquamarine allocates
-#            its buffers through a DRM card (KMS) node, even with no screen
-#            (upstream draft: notes/upstream/aquamarine-headless-without-kms.md).
+#            its buffers through a DRM card (KMS) node, even with no screen.
+#            Upstream: aquamarine, no allocator for a headless-only start
+#            without a DRM card (not yet filed).
 #   prepare  ExecStartPre, as root. Writes Hyprland's monitor rules for the
 #            card to /run/omanywhere/hypr/container.lua, which
 #            /usr/share/omanywhere/hypr/hyprland.lua loads after the owner's
@@ -22,7 +23,8 @@
 #   - virtual: vkms, whose connectors belong to the container. They stay on and
 #     are the desktop's monitors.
 #   - ignored: firmware framebuffers (simpledrm and the like), other faux
-#     devices, and any card without KMS (nvidia with nvidia_drm modeset=N).
+#     devices, any card without KMS (nvidia with nvidia_drm modeset=N), and
+#     an NVIDIA card without NVIDIA's GBM backend (see classify).
 #   - GPU: any other card with KMS. Its connectors are the host's displays:
 #     every one is turned off, at start and whenever one appears, so the
 #     container never lights a host display, and a headless output is the
@@ -46,19 +48,22 @@
 # (Restart= then runs check again, which skips). What's left is the second or
 # so between that check and Hyprland opening the card, which can't be closed
 # from here: with LIBSEAT_BACKEND=noop nothing between them holds the card.
-# The real fix is a compositor that needs no card to run headless (upstream
-# draft: notes/upstream/aquamarine-headless-without-kms.md).
+# The real fix is a compositor that needs no card to run headless.
+# Upstream: aquamarine, no allocator for a headless-only start without a DRM
+# card (not yet filed).
 set -euo pipefail
 
 # Where the choice, the monitor rules, sshd's gliff environment, the cards'
-# connectors, the render nodes and the nvidia_drm modeset flag live (plain
-# variables, so tests/session-logic.sh can point them at a made-up tree).
+# connectors, the render nodes, the nvidia_drm modeset flag and NVIDIA's GBM
+# backend live (plain variables, so tests/session-logic.sh can point them at
+# a made-up tree).
 env_file=/run/omanywhere/session.env
 rules=/run/omanywhere/hypr/container.lua
 sshd_env=/run/omanywhere/sshd/gliff.conf
 dri_dir=/dev/dri
 drm_class=/sys/class/drm
 nvidia_modeset=/sys/module/nvidia_drm/parameters/modeset
+nvidia_gbm=/usr/lib/gbm/nvidia-drm_gbm.so
 
 say() {
   echo "omanywhere-session: $*" >&2
@@ -104,16 +109,30 @@ classify() {
   esac
   if [[ $bus == faux ]]; then
     echo "ignored $driver a faux device without connectors"
-  elif [[ -n $(connectors "$1") ]]; then
-    echo "gpu $driver"
-  elif [[ $driver == nvidia && $(cat "$nvidia_modeset" 2>/dev/null) == Y ]]; then
-    # A GPU with no display outputs (a data-centre card) still has KMS.
-    echo "gpu $driver"
-  elif [[ $driver == nvidia ]]; then
-    echo "ignored $driver no KMS: the host loads nvidia_drm with modeset=N"
-  else
-    echo "ignored $driver no KMS: the card has no connectors"
+    return
   fi
+  # A GPU with no display outputs (a data-centre card) still has KMS.
+  if [[ -z $(connectors "$1") ]]; then
+    if [[ $driver != nvidia ]]; then
+      echo "ignored $driver no KMS: the card has no connectors"
+      return
+    elif [[ $(cat "$nvidia_modeset" 2>/dev/null) != Y ]]; then
+      echo "ignored $driver no KMS: the host loads nvidia_drm with modeset=N"
+      return
+    fi
+  fi
+  # aquamarine allocates through GBM, and NVIDIA's GBM backend isn't in the
+  # image: it comes from the host's driver, through NVIDIA's CDI spec, whose
+  # hook links it here. A card passed as plain /dev/dri lacks it, and
+  # Hyprland would fail to start, again and again. On Debian and Ubuntu the
+  # spec mounts it under /usr/lib/x86_64-linux-gnu/gbm, where Arch's Mesa
+  # doesn't look; linking it here would need code of ours that knows CDI's
+  # layout per distribution, so that isn't supported yet.
+  if [[ $driver == nvidia && ! -e $nvidia_gbm ]]; then
+    echo "ignored $driver no GBM backend ($nvidia_gbm), which only NVIDIA's CDI spec adds: use --gpu nvidia (--device nvidia.com/gpu=all, from nvidia-container-toolkit); a Debian or Ubuntu host's spec puts it elsewhere and isn't supported yet"
+    return
+  fi
+  echo "gpu $driver"
 }
 
 # probe_master NODE: print "free" if no one is DRM master of the card, "held"
@@ -191,8 +210,9 @@ render_node() {
 # a card of KIND whose own render node is RENDER (empty: none). gliff-server
 # reads GLIFF_VIDEO and GLIFF_CAPTURE, and its default, gpu, needs a render
 # node it can run Vulkan and VA-API on: without one it errors rather than
-# falling back to the CPU as its --help says (gliff 0.4.3; upstream draft:
-# notes/upstream/from-spikes.md). With no render node there is no GPU to
+# falling back to the CPU as its --help says (gliff 0.4.3). Upstream: gliff,
+# --video gpu errors instead of falling back to the CPU and shm capture
+# (not yet filed). With no render node there is no GPU to
 # capture dmabufs with either, so Hyprland copies each frame into shared
 # memory (shm), which takes gliff's CPU pipeline (OpenH264); that's what the
 # CPU-only spike on vkms needed. sshd gives these to every ssh session, so a

@@ -14,9 +14,10 @@ the signature-verified package `omarchy-keyring 20251027-1`, on an Omarchy host,
 `omarchy.gpg` holds one key, `Omarchy <pkgs@omarchy.org>`, fingerprint
 `40DFB630FF42BCFFB047046CF0134EE680CAC571`. `omarchy-revoked` is empty.
 
-The build checks the files against `SHA256SUMS` and checks the fingerprint, then trusts the
-key only to install the `omarchy` packages. From then on the `omarchy-keyring` package,
-which those signed packages install, carries the keys.
+The build checks the files against `SHA256SUMS` and checks the fingerprint, then adds the key
+to pacman's keyring so the `omarchy` repository's signatures verify. Like any key in that
+keyring, pacman trusts it for any package, not only Omarchy's. From then on the
+`omarchy-keyring` package, which those signed packages install, carries the keys.
 
 To update: install the new `omarchy-keyring` on a verified Omarchy host, copy the three
 files from `/usr/share/pacman/keyrings/`, regenerate `SHA256SUMS`, and compare the sums

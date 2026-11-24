@@ -31,8 +31,8 @@ Environment=XDG_SEAT=seat0 XDG_SESSION_TYPE=wayland XDG_SESSION_CLASS=user
 #     logind looks devices up in udev's database and a container runs no udev
 #     (and shouldn't: udev would act on the host's devices). Even with udev,
 #     logind would make the session DRM master, which the host's desktop holds
-#     on a shared GPU. Upstream draft:
-#     notes/upstream/logind-takedevice-without-udev.md.
+#     on a shared GPU. Upstream: systemd, logind's TakeDevice answers ENODEV
+#     for every device without udev (not yet filed).
 Environment=HYPRLAND_CONFIG=/usr/share/omanywhere/hypr/hyprland.lua LIBSEAT_BACKEND=noop
 SyslogIdentifier=omanywhere-session
 # Why the session was skipped or refused shows in docker logs too.

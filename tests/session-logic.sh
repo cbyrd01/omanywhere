@@ -17,7 +17,9 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 drm_class=$tmp/class/drm
 nvidia_modeset=$tmp/nvidia_drm_modeset
-mkdir -p "$drm_class"
+nvidia_gbm=$tmp/gbm/nvidia-drm_gbm.so
+mkdir -p "$drm_class" "${nvidia_gbm%/*}"
+touch "$nvidia_gbm"
 
 # card NAME DEVICE_DIR DRIVER BUS [CONNECTOR...]: a card in the made-up sysfs,
 # its device at DEVICE_DIR (bound to DRIVER on BUS), with these connectors.
@@ -54,6 +56,16 @@ card card8 platform/display-subsystem msm_drm platform
 expect "amdgpu with connectors" "$(classify "$drm_class/card0")" "gpu amdgpu"
 expect "connector names" "$(connectors "$drm_class/card1" | paste -sd ' ')" "DP-1 DP-2 DP-3"
 expect "nvidia with connectors" "$(classify "$drm_class/card1")" "gpu nvidia"
+# NVIDIA's GBM backend comes only with its CDI spec: a card passed as plain
+# /dev/dri has none, and Hyprland can't allocate on it.
+rm "$nvidia_gbm"
+expect "nvidia without the GBM backend" "$(classify "$drm_class/card1")" \
+  "ignored nvidia no GBM backend ($nvidia_gbm), which only NVIDIA's CDI spec adds: use --gpu nvidia (--device nvidia.com/gpu=all, from nvidia-container-toolkit); a Debian or Ubuntu host's spec puts it elsewhere and isn't supported yet"
+echo Y >"$nvidia_modeset"
+expect "nvidia, no connectors, modeset=Y, without the GBM backend" "$(classify "$drm_class/card2")" \
+  "ignored nvidia no GBM backend ($nvidia_gbm), which only NVIDIA's CDI spec adds: use --gpu nvidia (--device nvidia.com/gpu=all, from nvidia-container-toolkit); a Debian or Ubuntu host's spec puts it elsewhere and isn't supported yet"
+expect "amdgpu needs no NVIDIA GBM backend" "$(classify "$drm_class/card0")" "gpu amdgpu"
+touch "$nvidia_gbm"
 echo N >"$nvidia_modeset"
 expect "nvidia, no connectors, modeset=N" "$(classify "$drm_class/card2")" \
   "ignored nvidia no KMS: the host loads nvidia_drm with modeset=N"

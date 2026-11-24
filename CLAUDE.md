@@ -11,7 +11,7 @@ container follows best practice, the GPU is optional, and fixes go upstream firs
 
 ## Where we are
 
-Not started (created 2026-11-21). Read `notes/research/` first.
+v0 is merged (PRs #1–#7): `README.md` and `docs/usage.md` describe it; the research is in `notes/research/`.
 
 ## `notes/`
 

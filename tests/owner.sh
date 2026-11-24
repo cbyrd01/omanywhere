@@ -4,7 +4,8 @@
 # pre-refresh-pacman hook keeps pacman working after Omarchy rewrites
 # pacman.conf, and recreating the container over the same volumes keeps the
 # account, its home, the ssh host key and the machine-id. Bad inputs fail the
-# unit, and sshd with it. Usage: tests/owner.sh (IMAGE defaults to
+# unit, and sshd with it, and so does a password in the environment: it is
+# taken only as a file. Usage: tests/owner.sh (IMAGE defaults to
 # omanywhere:dev).
 set -euo pipefail
 
@@ -16,10 +17,11 @@ run=omanywhere-test-owner-$$
 first=$run-first
 second=$run-second
 nokey=$run-nokey
+envpw=$run-envpw
 home_volume=$run-home
 state_volume=$run-state
 tmp=$(mktemp -d)
-trap 'cleanup "$first" "$second" "$nokey"; remove_volumes "$home_volume" "$state_volume"; rm -rf "$tmp"' EXIT
+trap 'cleanup "$first" "$second" "$nokey" "$envpw"; remove_volumes "$home_volume" "$state_volume"; rm -rf "$tmp"' EXIT
 
 docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "image $IMAGE not found (run make image)"
 
@@ -194,6 +196,22 @@ grep -q 'no authorized key' <<<"$log" ||
 cexec "$nokey" systemctl is-active --quiet sshd.service && fail "sshd is active although the owner unit failed"
 pass "no key: omanywhere-owner.service failed with 'no authorized key', and sshd is not active"
 
+# --- A password in the environment, where docker inspect and the host's
+# process list show it: refused, even beside a good key, so the unit fails
+# and sshd stays down.
+start_container "$envpw" -e OMANYWHERE_AUTHORIZED_KEYS="$(cat "$tmp/id_ed25519.pub")" -e OMANYWHERE_PASSWORD=not-this-way
+wait_running "$envpw" 120 >/dev/null || fail "$envpw: systemd did not finish booting"
+cexec "$envpw" systemctl is-failed --quiet omanywhere-owner.service ||
+  fail "the owner unit did not fail with OMANYWHERE_PASSWORD in the environment"
+log=$(cexec "$envpw" journalctl -b -u omanywhere-owner.service --no-pager)
+grep -q 'OMANYWHERE_PASSWORD is in the environment' <<<"$log" ||
+  fail "the journal does not say the password must not come from the environment: $log"
+grep -q '/run/secrets/password' <<<"$log" || fail "the journal does not name /run/secrets/password: $log"
+[[ $log != *not-this-way* ]] || fail "the journal shows the password"
+cexec "$envpw" systemctl is-active --quiet sshd.service && fail "sshd is active although the owner unit failed"
+cleanup "$envpw"
+pass "OMANYWHERE_PASSWORD in the environment: refused, naming /run/secrets/password; sshd is not active"
+
 # Bad inputs, run straight in the same container: each fails before it
 # changes anything, and names what is wrong.
 # owner_fails EXPECTED VAR=VALUE...: the owner script fails, saying EXPECTED.
@@ -212,6 +230,8 @@ owner_fails "OMANYWHERE_AUTHORIZED_KEYS line 3 is not an ssh public key" \
 cexec "$nokey" groupadd -g 2000 bob
 owner_fails "group bob exists with gid 2000, not 2001" \
   OMANYWHERE_USER=bob OMANYWHERE_UID=2001 "OMANYWHERE_AUTHORIZED_KEYS=$good_key"
-pass "a bad key line is named by number; a group named after the user with another gid is refused"
+owner_fails "OMANYWHERE_PASSWORD is in the environment" \
+  OMANYWHERE_PASSWORD= "OMANYWHERE_AUTHORIZED_KEYS=$good_key"
+pass "a bad key line is named by number; a group named after the user with another gid is refused; an empty OMANYWHERE_PASSWORD in the environment is refused too"
 
 echo "owner test passed"
