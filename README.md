@@ -8,8 +8,8 @@ An unofficial community project, not affiliated with Omacom or Omarchy.
 
 ## Status
 
-Version 0, in progress. It has the image, the owner account and ssh, the desktop session, and
-the `omanywhere` command. The research behind it is in `notes/` (local, not committed).
+Version 0: the image, the owner account and ssh, the desktop session on a GPU or a vkms card,
+and the `omanywhere` command. CI builds the image and runs the tests that need no device.
 
 ## Use
 

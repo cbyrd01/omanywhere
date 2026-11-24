@@ -45,18 +45,12 @@ jobs:
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /usr/local/.ghcup \
             /usr/share/swift /opt/hostedtoolcache
           df -h /
-          nproc
-          free -h
-          docker info
       - name: Verify the Arch base image
         run: make verify-base
       - name: Build the image
         run: make image
       - name: Tests
-        run: make test-session-logic test-boot test-owner test-cli
-      - name: Disk after the build
-        if: always()
-        run: df -h / /mnt
+        run: make test
       - name: Kernel denials
         if: failure()
         run: sudo dmesg | grep -i -E 'apparmor|denied' | tail -50 || true
