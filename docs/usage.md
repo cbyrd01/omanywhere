@@ -126,6 +126,7 @@ Every container gets these flags, from `lib/run-flags.bash`. The tests use the s
 | `--cgroupns=private`, `--security-opt writable-cgroups=true` | systemd runs as PID 1 with no privilege, in a private cgroup namespace whose own subtree is writable. |
 | `--tmpfs /run`, `--tmpfs /run/lock`, `--tmpfs /tmp` | systemd expects a tmpfs at each of these. |
 | `--tmpfs /run/secrets:mode=0700` | The password and keys are bind-mounted inside this root-only directory. The files belong to your host user, whose uid is usually the owner's (1000), so the directory is what keeps the owner's programs from reading the sudo password. |
+| `--security-opt seccomp=lib/seccomp.json` | Docker's default seccomp profile plus one rule: any process may call `clone` and `unshare` with namespace flags. Docker's default allows that only with `CAP_SYS_ADMIN`, and Chromium's sandbox needs a user namespace, so without the rule Chromium crashes at start. Podman's default profile allows the same. The kernel still decides the rest: a process outside a user namespace of its own gets no new mount, network or PID namespace. In exchange, code in the container can reach the kernel's user-namespace code paths. `scripts/seccomp-profile` makes the file from Docker's profile for `docker-v29.9.2` (moby, Apache License 2.0); rerun it when Docker's default changes. |
 | `--tty` | It gives systemd a console. See [below](#--tty-and-docker-logs). |
 
 `up` also passes these for each container:
