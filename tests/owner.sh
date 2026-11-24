@@ -32,6 +32,7 @@ test_key "$tmp"
 mkdir "$tmp/own"
 test_key "$tmp/own" # a key the owner adds to ~/.ssh/authorized_keys themselves
 password=$(head -c 18 /dev/urandom | base64)
+nopasswd=/etc/sudoers.d/90-omanywhere-nopasswd
 printf '%s\n' "$password" >"$tmp/password"
 volumes=(-v "$home_volume:/home" -v "$state_volume:/var/lib/omanywhere")
 marker=/home/$user/.local/state/omarchy/done/finalize-user
@@ -106,7 +107,9 @@ log=$(cexec "$first" journalctl -b --no-pager)
 [[ $log != *"$password"* ]] || fail "the password is in the journal"
 out=$(docker exec -i "$first" runuser -u "$user" -- sudo -S -p '' true 2>&1 <<<"$password") ||
   fail "sudo with the owner's password failed: $out"
-pass "sudo works with the password from /run/secrets/password, which the journal doesn't contain"
+out=$(cexec "$first" runuser -u "$user" -- sudo -n true 2>&1) && fail "sudo ran without a password, with no OMANYWHERE_SUDO"
+cexec "$first" test ! -e "$nopasswd" || fail "$nopasswd exists, with no OMANYWHERE_SUDO"
+pass "sudo works with the password from /run/secrets/password, which the journal doesn't contain, and asks for it"
 
 # Omarchy's refresh puts its own pacman.conf back; pacman then can't download
 # in a container until the owner's hook, run by omarchy-hook as Omarchy's
@@ -151,7 +154,7 @@ pass "machine-id $machine_id, kept in the state volume"
 cleanup "$first"
 printf '%s\n' video docker no-such-group >"$tmp/groups"
 start_container "$second" "${volumes[@]}" \
-  -e OMANYWHERE_USER="$user" -e OMANYWHERE_UID="$uid" \
+  -e OMANYWHERE_USER="$user" -e OMANYWHERE_UID="$uid" -e OMANYWHERE_SUDO=nopasswd \
   -v "$tmp/id_ed25519.pub:/run/secrets/authorized_keys:ro" \
   -v "$tmp/groups:/var/lib/omarchy/provisioning/groups:ro"
 boot "$second"
@@ -174,9 +177,16 @@ cexec "$second" grep -qx '# changed by the owner' "$hook" || fail "the owner's c
 pass "the owner's pre-refresh-pacman hook kept as they left it"
 
 cexec "$second" bash -c "getent shadow $user | cut -d: -f2 | grep -q '^!'" || fail "$user's password is not locked"
-grep -q 'sudo' <<<"$log" ||
-  fail "the journal does not say that sudo needs a password"
+grep -qF "password is locked, so the lock screen can't be used" <<<"$log" ||
+  fail "the journal does not say that the lock screen needs a password"
 pass "no password given: the password is locked, and the journal says so"
+
+# OMANYWHERE_SUDO=nopasswd: sudo asks for no password, though there is none.
+# Without it, on the next run, the rule is gone.
+grep -qF "sudo asks $user for no password" <<<"$log" || fail "the journal does not say that sudo asks for no password"
+[[ $(cexec "$second" stat -c '%a %U' "$nopasswd") == "440 root" ]] || fail "$nopasswd is not root's, mode 0440"
+out=$(cexec "$second" runuser -u "$user" -- sudo -n true 2>&1) || fail "sudo asked for a password with OMANYWHERE_SUDO=nopasswd: $out"
+pass "OMANYWHERE_SUDO=nopasswd: sudo asks for no password ($nopasswd, root's, 0440)"
 
 second_key=$(check_ssh "$second")
 [[ $second_key == "$host_key" ]] || fail "the ssh host key changed on recreate"
@@ -185,6 +195,13 @@ pass "ssh key login works; host key and machine-id kept"
 out=$(ssh "${ssh_opts[@]}" -i "$tmp/own/id_ed25519" "$user@$(container_ip "$second")" 'id -un') ||
   fail "the key the owner added to ~/.ssh/authorized_keys no longer logs in"
 pass "the owner's own key in ~/.ssh/authorized_keys still logs in"
+
+# Run again without OMANYWHERE_SUDO, last, as a boot of this container would:
+# the rule is removed.
+out=$(docker exec -e OMANYWHERE_SUDO= "$second" /usr/lib/omanywhere/owner 2>&1) || fail "the owner script failed with OMANYWHERE_SUDO unset: $out"
+cexec "$second" test ! -e "$nopasswd" || fail "$nopasswd is still there with OMANYWHERE_SUDO unset"
+out=$(cexec "$second" runuser -u "$user" -- sudo -n true 2>&1) && fail "sudo still ran without a password, with OMANYWHERE_SUDO unset"
+pass "OMANYWHERE_SUDO unset: the rule is removed, and sudo asks for the password again"
 
 # --- No key at all: the unit fails and says why, and sshd stays down.
 start_container "$nokey"
@@ -232,6 +249,8 @@ owner_fails "group bob exists with gid 2000, not 2001" \
   OMANYWHERE_USER=bob OMANYWHERE_UID=2001 "OMANYWHERE_AUTHORIZED_KEYS=$good_key"
 owner_fails "OMANYWHERE_PASSWORD is in the environment" \
   OMANYWHERE_PASSWORD= "OMANYWHERE_AUTHORIZED_KEYS=$good_key"
-pass "a bad key line is named by number; a group named after the user with another gid is refused; an empty OMANYWHERE_PASSWORD in the environment is refused too"
+owner_fails "OMANYWHERE_SUDO 'yes' is not nopasswd" \
+  OMANYWHERE_SUDO=yes "OMANYWHERE_AUTHORIZED_KEYS=$good_key"
+pass "a bad key line is named by number; a group named after the user with another gid is refused; an empty OMANYWHERE_PASSWORD in the environment is refused too; so is OMANYWHERE_SUDO=yes"
 
 echo "owner test passed"

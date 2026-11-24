@@ -4,7 +4,7 @@
 #
 #   omanywhere up NAME [--gpu auto|none|nvidia|dri|dri:/dev/dri/cardN]
 #                      [--key FILE | --github USER [--yes]] [--listen ADDR]
-#                      [--drm-master allow]
+#                      [--drm-master allow] [--sudo nopasswd|password]
 #   omanywhere down NAME [--purge [--yes]]
 #   omanywhere ssh-config NAME
 #   omanywhere status NAME
@@ -34,6 +34,7 @@ usage() {
   cat >&2 <<'EOF'
 usage: omanywhere up NAME [--gpu auto|none|nvidia|dri|dri:/dev/dri/cardN]
                      [--key FILE | --github USER [--yes]] [--listen ADDR] [--drm-master allow]
+                     [--sudo nopasswd|password]
        omanywhere down NAME [--purge [--yes]]
        omanywhere ssh-config NAME
        omanywhere status NAME
@@ -67,7 +68,7 @@ set_name() {
 
 # --- Settings kept in $config/settings, one key=value per line: what the
 # first up chose, which later ups reuse.
-listen='' port='' gpu='' drm_master=''
+listen='' port='' gpu='' drm_master='' sudo=''
 
 # check KEY VALUE WHERE: VALUE is valid for the setting KEY, or die saying
 # what WHERE (an option, or the settings file) takes. The options and the
@@ -82,6 +83,8 @@ check() {
     listen) [[ $2 =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ || ($2 =~ ^[0-9A-Fa-f:.]+$ && $2 == *:*) ]] ||
       die "$3 '$2': takes an IPv4 or IPv6 address, such as 127.0.0.1 or a tailnet address" ;;
     drm_master) [[ $2 == allow ]] || die "$3 '$2': takes allow" ;;
+    # password, the default, is saved as an empty value.
+    sudo) [[ $2 == nopasswd || $2 == password ]] || die "$3 '$2': takes nopasswd or password" ;;
     port) [[ $2 =~ ^[1-9][0-9]{0,4}$ && $2 -le 65535 ]] || die "$3 '$2': takes a TCP port" ;;
     # GitHub's rule: letters, digits and single inner hyphens, up to 39
     # characters. It also keeps the URL's path to one component.
@@ -95,7 +98,7 @@ load_settings() {
   [[ -f $settings ]] || return 1
   while IFS='=' read -r key value; do
     case $key in
-      listen | port | gpu | drm_master)
+      listen | port | gpu | drm_master | sudo)
         [[ -z $value ]] || check "$key" "$value" "$settings: $key"
         printf -v "$key" '%s' "$value"
         ;;
@@ -104,7 +107,7 @@ load_settings() {
 }
 
 save_settings() {
-  printf '%s\n' "listen=$listen" "port=$port" "gpu=$gpu" "drm_master=$drm_master" >"$settings.new"
+  printf '%s\n' "listen=$listen" "port=$port" "gpu=$gpu" "drm_master=$drm_master" "sudo=$sudo" >"$settings.new"
   mv "$settings.new" "$settings"
 }
 
@@ -375,7 +378,7 @@ endpoint() {
 # --- Commands.
 
 cmd_up() {
-  local keyfile='' github='' yes='' opt_gpu='' opt_listen='' opt_master='' state keys
+  local keyfile='' github='' yes='' opt_gpu='' opt_listen='' opt_master='' opt_sudo='' state keys
   set_name "${1:-}"
   shift
   while (($#)); do
@@ -405,6 +408,10 @@ cmd_up() {
         check drm_master "${2:-}" --drm-master
         opt_master=$2
         ;;
+      --sudo)
+        check sudo "${2:-}" --sudo
+        opt_sudo=$2
+        ;;
       *) usage ;;
     esac
     shift 2
@@ -414,8 +421,8 @@ cmd_up() {
   docker image inspect "$image" >/dev/null 2>&1 || die "image $image not found: build it with make image"
 
   state=$(container_state)
-  [[ $state == absent || -z $opt_gpu$opt_listen$opt_master ]] ||
-    say "ignoring --gpu, --listen and --drm-master: $container exists, and they apply when it's made (omanywhere down $name, then up)"
+  [[ $state == absent || -z $opt_gpu$opt_listen$opt_master$opt_sudo ]] ||
+    say "ignoring --gpu, --listen, --drm-master and --sudo: $container exists, and they apply when it's made (omanywhere down $name, then up)"
   if [[ $state == running ]]; then
     if [[ -n $keyfile$github ]]; then
       keys=$(new_keys "$keyfile" "$github") || exit 1
@@ -432,6 +439,9 @@ cmd_up() {
     gpu=${opt_gpu:-${gpu:-auto}}
     listen=${opt_listen:-${listen:-127.0.0.1}}
     drm_master=${opt_master:-$drm_master}
+    sudo=${opt_sudo:-$sudo}
+    [[ $sudo != password ]] || sudo=''
+    [[ -n $opt_sudo || -z $sudo ]] || say "sudo asks for no password, as the settings keep from an earlier up --sudo nopasswd (up --sudo password to ask again)"
     gpu_args "$gpu"
   fi
   keys=$(new_keys "$keyfile" "$github") || exit 1
@@ -446,7 +456,8 @@ cmd_up() {
   else
     say "making $container from $image: $gpu_note"
     local env=() bind out
-    [[ -z $drm_master ]] || env=(-e OMANYWHERE_DRM_MASTER=allow)
+    [[ -z $drm_master ]] || env+=(-e OMANYWHERE_DRM_MASTER=allow)
+    [[ -z $sudo ]] || env+=(-e OMANYWHERE_SUDO=nopasswd)
     bind=$listen
     [[ $listen != *:* ]] || bind="[$listen]"
     # The first up picks the port; later ones keep it, so ssh's address

@@ -69,6 +69,7 @@ container, run `down NAME` and then `up NAME --option`.
 | `--github USER` | | Instead of `--key`: the public keys GitHub publishes for USER at `https://github.com/USER.keys`. Whoever holds that account can log in, so `up` shows the keys' fingerprints and asks first. Without a terminal, add `--yes`. |
 | `--listen ADDR` | `127.0.0.1` | The address ssh is published on, such as a tailnet address. |
 | `--drm-master allow` | off | Lets the desktop take DRM master of a GPU that no display server holds (see [DRM master](#drm-master)). |
+| `--sudo nopasswd\|password` | `password` | With `nopasswd`, sudo asks the owner for no password, as in Toolbox; `password` asks again. Any program running as the owner, a bad package or a browser exploit say, can then become root in the container without one. As root it can also read the password file, so the lock screen no longer stops it. With rootful Docker, root in the container is uid 0 on the host, held back only by the container's limits. |
 
 `--key` and `--github` also work on a container that already exists. `up` rewrites its keys
 file, and the new keys take effect at the container's next start. Without either, the keys
@@ -89,7 +90,7 @@ On the first `up`, the config directory gets these files:
 - `authorized_keys`, mounted read-only at `/run/secrets/authorized_keys`. Each line is a public
   key, and may start with authorized_keys options such as `from="…"`, which sshd applies. A
   `command="…"` would run instead of gliff-server, so gliff can't use that key.
-- `settings`: the listen address, the port, `--gpu` and `--drm-master`.
+- `settings`: the listen address, the port, `--gpu`, `--drm-master` and `--sudo`.
 
 On the first `up`, Docker picks a free port for ssh, and `up` keeps it after that, so the
 `ssh-config` block stays right. If another program has taken that port by a later `up`, `up`
@@ -134,7 +135,8 @@ Every container gets these flags, from `lib/run-flags.bash`. The tests use the s
   the name;
 - `--pull never`, because the image is local (`make image`) and is never pulled;
 - the two volumes, the two secret files (read-only) and the device;
-- `-e OMANYWHERE_DRM_MASTER=allow`, with `--drm-master allow`;
+- `-e OMANYWHERE_DRM_MASTER=allow`, with `--drm-master allow`, and `-e OMANYWHERE_SUDO=nopasswd`,
+  with `--sudo nopasswd`;
 - `-p ADDR:PORT:22`.
 
 It never uses `--privileged`, `--cap-add`, a restart policy, or the host's network or cgroups.
