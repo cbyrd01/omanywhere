@@ -14,7 +14,7 @@ on:
       - .dockerignore
       - .github/workflows/image.yml
   push:
-    branches: [main, ci-image]
+    branches: [main]
     paths: *paths
   workflow_dispatch:
 
