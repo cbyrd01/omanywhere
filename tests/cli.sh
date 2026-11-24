@@ -214,11 +214,17 @@ inspect() {
 [[ $(inspect '{{.Config.Tty}}') == true ]] || fail "the container has no tty"
 [[ $(inspect '{{.HostConfig.RestartPolicy.Name}}') =~ ^(no|)$ ]] || fail "the container has a restart policy"
 [[ $(inspect '{{json .HostConfig.Devices}}') =~ ^(null|\[\])$ ]] || fail "--gpu none passed devices"
-[[ $(inspect '{{json .HostConfig.SecurityOpt}}') == '["writable-cgroups=true"]' ]] ||
-  fail "security options are not just writable-cgroups=true: $(inspect '{{json .HostConfig.SecurityOpt}}')"
+# writable-cgroups, and lib/seccomp.json as the seccomp profile.
+inspect '{{json .HostConfig.SecurityOpt}}' | python3 -I -c '
+import json, sys
+opts = json.load(sys.stdin)
+ok = len(opts) == 2 and opts[0] == "writable-cgroups=true" and opts[1].startswith("seccomp=") \
+  and json.loads(opts[1][len("seccomp="):]) == json.load(open(sys.argv[1]))
+sys.exit(0 if ok else 1)' "$here/../lib/seccomp.json" ||
+  fail "security options are not writable-cgroups=true and lib/seccomp.json"
 [[ $(inspect '{{json .HostConfig.Tmpfs}}') == '{"/run":"","/run/lock":"","/run/secrets":"mode=0700","/tmp":""}' ]] ||
   fail "unexpected tmpfs mounts: $(inspect '{{json .HostConfig.Tmpfs}}')"
-pass "run flags: unprivileged, no capabilities added, private cgroup namespace, a tty, no restart policy, no device, a root-only /run/secrets"
+pass "run flags: unprivileged, no capabilities added, lib/seccomp.json, private cgroup namespace, a tty, no restart policy, no device, a root-only /run/secrets"
 
 mounts=$(inspect '{{range .Mounts}}{{.Type}} {{.Name}} {{.Destination}} {{.RW}}{{"\n"}}{{end}}' | sort)
 grep -qx "volume $home_volume /home true" <<<"$mounts" || fail "no $home_volume on /home: $mounts"

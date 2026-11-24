@@ -1,28 +1,27 @@
 #!/bin/bash
 # Make lib/seccomp.json: Docker's default seccomp profile (moby, Apache License
-# 2.0) for TAG, plus one rule that lets any process call clone and unshare
-# with namespace flags. Docker's default lets only CAP_SYS_ADMIN do that, and
-# Chromium's sandbox needs a user namespace. The kernel still decides the rest:
-# outside a user namespace of its own, a process without CAP_SYS_ADMIN gets no
-# new mount, network or PID namespace.
+# 2.0) for TAG, plus one rule that allows clone and unshare with namespace
+# flags. docs/usage.md ("The run flags") says why.
 #
-# Usage: scripts/seccomp-profile [TAG] (default docker-v29.9.2). Rerun it with
-# the host's Docker version when Docker's default profile changes, and commit
-# the result; docs/usage.md ("The run flags") says which tag it is from.
+# Usage: scripts/seccomp-profile [TAG] (default docker-v29.9.2). Rerun it when
+# Docker's default profile changes, and commit the result.
 set -euo pipefail
 
 tag=${1:-docker-v29.9.2}
 [[ $tag =~ ^docker-v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "seccomp-profile: '$tag' is not a tag like docker-v29.9.2" >&2; exit 1; }
 out=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/seccomp.json
 url=https://raw.githubusercontent.com/moby/moby/$tag/vendor/github.com/moby/profiles/seccomp/default.json
+profile=$(curl -fsSL --proto =https --proto-redir =https --max-time 30 "$url")
 
-curl -fsSL --proto =https --max-time 30 "$url" |
-  python3 -I -c '
+python3 -I /dev/fd/3 3<<'EOF' <<<"$profile" >"$out.new"
 import json, sys
 profile = json.load(sys.stdin)
-profile["syscalls"].append({"names": ["clone", "unshare"], "action": "SCMP_ACT_ALLOW"})
+profile["syscalls"].append({
+    "names": ["clone", "unshare"], "action": "SCMP_ACT_ALLOW",
+    "comment": "omanywhere: namespaces, for the Chromium sandbox (docs/usage.md)",
+})
 json.dump(profile, sys.stdout, indent=1)
 print()
-' >"$out.new"
+EOF
 mv "$out.new" "$out"
 echo "wrote $out from $url"

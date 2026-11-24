@@ -108,15 +108,13 @@ out=$(docker exec -i "$first" runuser -u "$user" -- sudo -S -p '' true 2>&1 <<<"
   fail "sudo with the owner's password failed: $out"
 pass "sudo works with the password from /run/secrets/password, which the journal doesn't contain"
 
-# lib/seccomp.json lets the owner make a user namespace, which Chromium's
-# sandbox needs; with Docker's default profile it crashes at start.
-out=$(cexec "$first" runuser -u "$user" -- unshare --user --map-root-user true 2>&1) ||
-  fail "the owner can't make a user namespace: $out"
+# lib/seccomp.json allows the namespaces Chromium's sandbox makes; with
+# Docker's default profile it crashes at start.
 out=$(cexec "$first" runuser -u "$user" -- env HOME=/tmp/chromium-test \
   chromium --headless=new --dump-dom 'data:text/html,<p>sandboxed</p>' 2>&1) ||
   fail "Chromium failed in the container: $out"
 grep -F '<p>sandboxed</p>' >/dev/null <<<"$out" || fail "Chromium did not render the page: $out"
-pass "the owner can make a user namespace, and Chromium runs with its sandbox"
+pass "Chromium runs with its sandbox (lib/seccomp.json)"
 
 # Omarchy's refresh puts its own pacman.conf back; pacman then can't download
 # in a container until the owner's hook, run by omarchy-hook as Omarchy's

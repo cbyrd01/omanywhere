@@ -928,7 +928,8 @@
     "clone",
     "unshare"
    ],
-   "action": "SCMP_ACT_ALLOW"
+   "action": "SCMP_ACT_ALLOW",
+   "comment": "omanywhere: namespaces, for the Chromium sandbox (docs/usage.md)"
   }
  ]
 }

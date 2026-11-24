@@ -87,8 +87,8 @@ docker run -d --tty --cgroupns=private --security-opt writable-cgroups=true \
 ```
 
 [docs/usage.md](docs/usage.md#the-run-flags) explains each flag. There is no `--privileged`,
-no `--cap-add`, and no host network or cgroups. The seccomp profile is Docker's default with
-user namespaces allowed, which Chromium's sandbox needs.
+no `--cap-add`, and no host network or cgroups. The seccomp profile is Docker's default plus
+namespaces for Chromium's sandbox.
 
 The `omanywhere` package (`package/omanywhere/`) makes the owner account at boot from these
 inputs (`package/omanywhere/owner` has the details):
