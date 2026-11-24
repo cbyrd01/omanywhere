@@ -118,12 +118,17 @@ out=$(cexec "$first" runuser -u "$user" -- env HOME=/tmp/chromium-test \
   fail "Chromium failed in the container: $out"
 grep -F '<p>sandboxed</p>' >/dev/null <<<"$out" || fail "Chromium did not render the page: $out"
 pass "Chromium runs with its sandbox (lib/seccomp.json)"
-# The namespaces it allows don't reach netfilter: Docker's default keeps
-# nf_tables from code with no CAP_SYS_ADMIN, and so does lib/seccomp.json.
-out=$(cexec "$first" runuser -u "$user" -- unshare -Urn nft list tables 2>&1) &&
-  fail "nft worked in a user and network namespace: $out"
-grep -F "Operation not permitted" >/dev/null <<<"$out" ||
-  fail "nft in a user and network namespace failed, but not on seccomp: $out"
+# The namespaces it allows don't reach netfilter: in a user and network
+# namespace of its own, the owner gets a route netlink socket but no
+# NETLINK_NETFILTER one, even with the protocol's upper 32 bits set.
+out=$(cexec "$first" runuser -u "$user" -- unshare -Urn python3 -I -c '
+import ctypes, errno
+libc = ctypes.CDLL(None, use_errno=True)
+for protocol in 0, 12, 1 << 32 | 12:
+    fd = libc.syscall(41, 16, 3, ctypes.c_long(protocol))  # x86_64 socket(AF_NETLINK, SOCK_RAW, ...)
+    print("ok" if fd >= 0 else errno.errorcode[ctypes.get_errno()], end=" ")' 2>&1)
+[[ $out == "ok EPERM EPERM " ]] ||
+  fail "netlink sockets in a user and network namespace (route, netfilter, netfilter with high bits): $out, not ok EPERM EPERM"
 pass "netfilter is out of reach from a user namespace (lib/seccomp.json)"
 
 # Omarchy's refresh puts its own pacman.conf back; pacman then can't download

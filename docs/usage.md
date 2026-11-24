@@ -127,7 +127,7 @@ Every container gets these flags, from `lib/run-flags.bash`. The tests use the s
 | `--cgroupns=private`, `--security-opt writable-cgroups=true` | systemd runs as PID 1 with no privilege, in a private cgroup namespace whose own subtree is writable. |
 | `--tmpfs /run`, `--tmpfs /run/lock`, `--tmpfs /tmp` | systemd expects a tmpfs at each of these. |
 | `--tmpfs /run/secrets:mode=0700` | The password and keys are bind-mounted inside this root-only directory. The files belong to your host user, whose uid is usually the owner's (1000), so the directory is what keeps the owner's programs from reading the sudo password. |
-| `--security-opt seccomp=lib/seccomp.json` | Docker's default seccomp profile plus one rule: any process may call `clone` and `unshare` with namespace flags, as Podman's default profile allows. Docker's default allows that only with `CAP_SYS_ADMIN`, and Chromium's sandbox needs it: a user namespace, then a new PID namespace per renderer from inside it. Without the rule Chromium crashes at start. The kernel still decides the rest: a process outside a user namespace of its own gets no new mount, network or PID namespace. A rule allowing only calls that make a user namespace would block no more kernel code, since such a call can ask for every other namespace too, and it breaks Chromium's per-renderer PID namespaces. The cost: in a user namespace of its own, code in the container is root of a new network namespace and can reach kernel networking code that Docker's default keeps from it, the source of several container escapes. The profile closes the largest part of that, netfilter: no netlink socket for `NETLINK_NETFILTER`, and no `socketcall`, the i386 call that hides a socket's arguments from seccomp. Traffic control (`tc`, over route netlink) stays reachable, and so does legacy iptables on a host that loads `ip_tables`. Keep the host's kernel patched, above all where people or agents you don't trust use the desktops. `scripts/seccomp-profile` makes the file from Docker's profile (moby, Apache License 2.0) for the tag the script names; rerun it when Docker's default changes. |
+| `--security-opt seccomp=lib/seccomp.json` | Docker's default seccomp profile plus one rule: any process may call `clone` and `unshare` with namespace flags, as Podman's default profile allows. Docker's default allows that only with `CAP_SYS_ADMIN`, and Chromium's sandbox needs it: a user namespace, then a new PID namespace per renderer from inside it. Without the rule Chromium crashes at start. The kernel still decides the rest: a process outside a user namespace of its own gets no new mount, network or PID namespace. A rule allowing only calls that make a user namespace would block no more kernel code, since such a call can ask for every other namespace too, and it breaks Chromium's per-renderer PID namespaces. The cost is [below](#seccomp-and-namespaces). `scripts/seccomp-profile` makes the file from Docker's profile (moby, Apache License 2.0) for the tag the script names; rerun it when Docker's default changes. |
 | `--tty` | It gives systemd a console. See [below](#--tty-and-docker-logs). |
 
 `up` also passes these for each container:
@@ -143,6 +143,20 @@ Every container gets these flags, from `lib/run-flags.bash`. The tests use the s
 It never uses `--privileged`, `--cap-add`, a restart policy, or the host's network or cgroups.
 To run the image without `bin/omanywhere`, as from Compose, see the README's
 [interface](../README.md#the-containers-interface).
+
+### seccomp and namespaces
+
+In a user namespace of its own, code in the container is root of a new network namespace and
+can reach kernel networking code that Docker's default keeps from it, the source of several
+container escapes. The profile closes the largest part of that, netfilter:
+
+- no netlink socket for `NETLINK_NETFILTER`;
+- no `socketcall`, the i386 call that hides a socket's arguments from seccomp. Arch's
+  lib32-glibc makes the socket calls directly, so only old 32-bit binaries lose networking.
+
+Traffic control (`tc`, over route netlink) stays reachable, and so does legacy iptables on a
+host that loads `ip_tables`. Keep the host's kernel patched, above all where people or agents
+you don't trust use the desktops.
 
 ### `--tty` and `docker logs`
 

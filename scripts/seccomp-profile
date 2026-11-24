@@ -22,15 +22,44 @@ profile = json.load(sys.stdin)
 rules = profile["syscalls"]
 # socketcall sits in the one unconditional list.
 [everything] = [r for r in rules if "socketcall" in r["names"]]
-assert not everything.get("args") and everything["action"] == "SCMP_ACT_ALLOW"
+assert not everything.get("args") and everything["action"] == "SCMP_ACT_ALLOW", \
+    "socketcall is no longer in Docker's unconditional allow list"
 everything["names"].remove("socketcall")
-# Docker allows socket() for address families below 38 (AF_NETLINK is 16)
-# and a few above, one by one. Protocol 12 is NETLINK_NETFILTER in netlink;
-# no other family below 38 uses it outside raw IPv4/IPv6 sockets.
-[families] = [r for r in rules if r["names"] == ["socket"]
-              and r.get("args") == [{"index": 0, "value": 38, "op": "SCMP_CMP_LT"}]]
-families["args"].append({"index": 2, "value": 12, "op": "SCMP_CMP_NE"})
-families["comment"] = "omanywhere: no NETLINK_NETFILTER (docs/usage.md)"
+
+# Docker allows socket() for address families below 38, and a few above one
+# by one. Keep that, but allow AF_NETLINK (16) only for protocols other than
+# 12 (NETLINK_NETFILTER). The kernel reads both as a 32-bit int, so each
+# match ignores the upper 32 bits (an NE on the 64-bit value would let
+# 0x10000000c through as 12); MASKED_EQ over aligned blocks does that.
+below_38 = {"index": 0, "value": 38, "op": "SCMP_CMP_LT"}
+matches = [r for r in rules if r["names"] == ["socket"] and r.get("args") == [below_38]]
+assert len(matches) == 1, "Docker's socket rule for families below 38 has changed"
+rules.remove(matches[0])
+
+def blocks(lo, hi):
+    """(mask, value) pairs whose matches are exactly lo..hi, low 32 bits."""
+    out = []
+    while lo <= hi:
+        size = lo & -lo or 1 << 32
+        while size > hi - lo + 1:
+            size >>= 1
+        out.append((0xFFFFFFFF & ~(size - 1), lo))
+        lo += size
+    return out
+
+def socket_rule(comment, *conditions):
+    """Allow socket() when every (arg index, mask, value) matches."""
+    return {"names": ["socket"], "action": "SCMP_ACT_ALLOW", "comment": "omanywhere: " + comment,
+            "args": [{"index": i, "value": m, "valueTwo": v, "op": "SCMP_CMP_MASKED_EQ"}
+                     for i, m, v in conditions]}
+
+AF_NETLINK, NETLINK_NETFILTER, NETLINK_MAX = 16, 12, 31  # the kernel has 32 netlink protocols
+for mask, value in blocks(0, AF_NETLINK - 1) + blocks(AF_NETLINK + 1, 37):
+    rules.append(socket_rule("Docker's families below 38, less netlink", (0, mask, value)))
+for mask, value in blocks(0, NETLINK_NETFILTER - 1) + blocks(NETLINK_NETFILTER + 1, NETLINK_MAX):
+    rules.append(socket_rule("netlink, but not NETLINK_NETFILTER (docs/usage.md)",
+                             (0, 0xFFFFFFFF, AF_NETLINK), (2, mask, value)))
+
 rules.append({
     "names": ["clone", "unshare"], "action": "SCMP_ACT_ALLOW",
     "comment": "omanywhere: namespaces, for the Chromium sandbox (docs/usage.md)",
