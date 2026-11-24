@@ -232,9 +232,9 @@ pass "named volumes on /home and /var/lib/omanywhere; password and keys as read-
 password=$(<"$config/password")
 ((${#password} >= 20)) || fail "the password is short: ${#password} characters"
 [[ $(<"$config/authorized_keys") == "$(<"$tmp/id_ed25519.pub")" ]] || fail "authorized_keys is not the --key file"
-inspect '{{json .Config.Env}} {{json .Args}} {{json .Config.Cmd}} {{json .Path}}' | grep -qF "$password" &&
+inspect '{{json .Config.Env}} {{json .Args}} {{json .Config.Cmd}} {{json .Path}}' | grep -F "$password" >/dev/null &&
   fail "the password is in the container's environment or arguments"
-cexec "$container" journalctl -b --no-pager | grep -qF "$password" && fail "the password is in the journal"
+cexec "$container" journalctl -b --no-pager | grep -F "$password" >/dev/null && fail "the password is in the journal"
 out=$(docker exec -i "$container" runuser -u "$user" -- sudo -S -p '' true 2>&1 <"$config/password") ||
   fail "sudo with the generated password failed: $out"
 pass "config 0700, password 0600 (${#password} characters), not in argv, env or journal; sudo takes it"

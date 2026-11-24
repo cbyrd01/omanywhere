@@ -78,9 +78,9 @@ session=$(cexec "$name" systemctl show -P ActiveState,Result omanywhere-session.
 [[ $session == "inactive exec-condition" ]] ||
   fail "with no DRM card, omanywhere-session.service is '$session', not 'inactive exec-condition'"
 missing='omanywhere-session: no DRM card (/dev/dri/card*) in the container'
-cexec "$name" journalctl -b -u omanywhere-session.service --no-pager | grep -qF "$missing" ||
+cexec "$name" journalctl -b -u omanywhere-session.service --no-pager | grep -F "$missing" >/dev/null ||
   fail "the journal does not say the DRM card is missing"
-docker logs "$name" 2>&1 | grep -qF "$missing" || fail "docker logs does not say the DRM card is missing"
+docker logs "$name" 2>&1 | grep -F "$missing" >/dev/null || fail "docker logs does not say the DRM card is missing"
 pass "no DRM card: omanywhere-session.service skipped, and the journal and docker logs say why"
 
 # Every failed (or restart-looping) unit must be in the allow list, which
