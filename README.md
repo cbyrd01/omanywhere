@@ -23,6 +23,24 @@ gliff --headless omanywhere-desk
 [docs/usage.md](docs/usage.md) covers the rest: the commands and their flags, GPU and CPU-only
 hosts, DRM master, gliff, and troubleshooting.
 
+## Host size
+
+Estimates for one desktop, not yet tested at these limits:
+
+| Host | Memory | CPU |
+|---|---|---|
+| With a GPU | 2 GB | 0.5 core |
+| CPU-only (vkms) | 2 GB | 2 cores |
+
+- Memory: an idle desktop with no client connected used 0.8 to 1.0 GiB (2026-11-24), on both
+  kinds of host. A gliff session adds tens of MiB, which leaves about 1 GiB for apps. A browser
+  with many tabs needs more.
+- CPU with a GPU: rendering and encoding run on the GPU, and the idle container used under
+  1% of one core.
+- CPU-only: Hyprland with llvmpipe used 0.4 to 2.3 cores in an active session at 1060x618, and
+  gliff's OpenH264 encoder 0.1 to 0.15. An active 1080p session costs more (see
+  [CPU and GPU hosts](docs/usage.md#cpu-and-gpu-hosts)).
+
 ## Uses
 
 - A cloud desktop per person.
