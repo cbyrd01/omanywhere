@@ -7,6 +7,7 @@ run_flags=(
   --tty
   --cgroupns=private
   --security-opt writable-cgroups=true
+  --security-opt "seccomp=$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/seccomp.json"
   --tmpfs /run
   --tmpfs /run/lock
   --tmpfs /tmp

@@ -111,6 +111,14 @@ out=$(cexec "$first" runuser -u "$user" -- sudo -n true 2>&1) && fail "sudo ran 
 cexec "$first" test ! -e "$nopasswd" || fail "$nopasswd exists, with no OMANYWHERE_SUDO"
 pass "sudo works with the password from /run/secrets/password, which the journal doesn't contain, and asks for it"
 
+# lib/seccomp.json allows the namespaces Chromium's sandbox makes; with
+# Docker's default profile it crashes at start.
+out=$(cexec "$first" runuser -u "$user" -- env HOME=/tmp/chromium-test \
+  chromium --headless=new --dump-dom 'data:text/html,<p>sandboxed</p>' 2>&1) ||
+  fail "Chromium failed in the container: $out"
+grep -F '<p>sandboxed</p>' >/dev/null <<<"$out" || fail "Chromium did not render the page: $out"
+pass "Chromium runs with its sandbox (lib/seccomp.json)"
+
 # Omarchy's refresh puts its own pacman.conf back; pacman then can't download
 # in a container until the owner's hook, run by omarchy-hook as Omarchy's
 # refresh does, adds the line again. Its sudo needs the owner's password: on

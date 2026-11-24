@@ -97,6 +97,7 @@ Compose, use the same flags:
 
 ```sh
 docker run -d --tty --cgroupns=private --security-opt writable-cgroups=true \
+  --security-opt seccomp=lib/seccomp.json \
   --tmpfs /run --tmpfs /run/lock --tmpfs /tmp --tmpfs /run/secrets:mode=0700 \
   -v NAME-home:/home -v NAME-state:/var/lib/omanywhere \
   -v ./authorized_keys:/run/secrets/authorized_keys:ro -v ./password:/run/secrets/password:ro \
@@ -104,7 +105,8 @@ docker run -d --tty --cgroupns=private --security-opt writable-cgroups=true \
 ```
 
 [docs/usage.md](docs/usage.md#the-run-flags) explains each flag. There is no `--privileged`,
-no `--cap-add`, and no host network or cgroups.
+no `--cap-add`, and no host network or cgroups. The seccomp profile is Docker's default plus
+namespaces for Chromium's sandbox.
 
 The `omanywhere` package (`package/omanywhere/`) makes the owner account at boot from these
 inputs (`package/omanywhere/owner` has the details):
