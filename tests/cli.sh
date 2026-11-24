@@ -107,9 +107,14 @@ for bad in '' ../x a/b -lead trail- 'a--b' 'a b' "$(printf 'a%.0s' {1..40})"; do
   fails "takes a GitHub user name" up "$name" --gpu none --github "$bad"
 done
 fails "--key and --github" up "$name" --gpu none --key "$tmp/id_ed25519.pub" --github octo-cat
-PATH=$tmp/bin:$PATH fails "couldn't fetch https://github.com/nobody.keys" up "$name" --gpu none --github nobody
-PATH=$tmp/bin:$PATH fails "no ssh key for GitHub user nokeys" up "$name" --gpu none --github nokeys
-PATH=$tmp/bin:$PATH fails "isn't a list of public keys" up "$name" --gpu none --github junk
+fails "pass it with --github" up "$name" --gpu none --key "$tmp/id_ed25519.pub" --yes
+PATH=$tmp/bin:$PATH fails "couldn't fetch https://github.com/nobody.keys" up "$name" --gpu none --github nobody --yes
+PATH=$tmp/bin:$PATH fails "no ssh key for GitHub user nokeys" up "$name" --gpu none --github nokeys --yes
+PATH=$tmp/bin:$PATH fails "isn't a list of public keys" up "$name" --gpu none --github junk --yes
+# Keys that would let a stranger in are confirmed: with no terminal, only
+# with --yes.
+cp "$tmp/id_ed25519.pub" "$tmp/gh/octo-cat.keys"
+PATH=$tmp/bin:$PATH fails "pass --yes to confirm" up "$name" --gpu none --github octo-cat </dev/null
 exists container "$container" && fail "a failed up left a container"
 exists volume "$home_volume" && fail "a failed up left a volume"
 [[ ! -e $config ]] || fail "a failed up left $config"
@@ -269,7 +274,7 @@ pass "up --key on a running container rewrote the keys in place, for the next st
 # Both keys, as the steps below log in with the second.
 cp "$tmp/both.pub" "$tmp/gh/octo-cat.keys"
 fingerprint=$(ssh-keygen -l -f "$tmp/id_ed25519.pub" | cut -d' ' -f2)
-out=$(PATH=$tmp/bin:$PATH "$cli" up "$name" --github octo-cat 2>&1) || fail "up --github on a running container failed: $out"
+out=$(PATH=$tmp/bin:$PATH "$cli" up "$name" --github octo-cat --yes 2>&1) || fail "up --github on a running container failed: $out"
 [[ $out == *"GitHub user octo-cat publishes"*"$fingerprint"* ]] || fail "up --github did not show the keys' fingerprints: $out"
 [[ $(<"$config/authorized_keys") == "$(<"$tmp/gh/octo-cat.keys")" ]] || fail "up --github did not write GitHub's keys"
 pass "up --github on a running container wrote the user's published keys, for the next start"

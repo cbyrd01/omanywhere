@@ -16,8 +16,8 @@ gliff --headless omanywhere-desk
 ```
 
 `up` takes your ssh keys from your ssh agent (`ssh-add -L`), from `--key FILE`, or from GitHub
-with `--github USER`. It picks
-the GPU, starts the container, waits for systemd, and then reports what came up:
+with `--github USER`. It picks the GPU, starts the container, waits for systemd, and then
+reports what came up:
 
 ```
 container  running
@@ -66,7 +66,7 @@ container, run `down NAME` and then `up NAME --option`.
 |---|---|---|
 | `--gpu auto\|none\|nvidia\|dri\|dri:/dev/dri/cardN` | `auto` | The DRM card the desktop runs on (see [CPU and GPU hosts](#cpu-and-gpu-hosts)). |
 | `--key FILE` | your ssh agent's keys | The public keys that may log in. `up` copies them to the config directory. |
-| `--github USER` | | Instead of `--key`: the public keys GitHub publishes for USER at `https://github.com/USER.keys`. `up` prints their fingerprints and copies them, as `--key` does. |
+| `--github USER` | | Instead of `--key`: the public keys GitHub publishes for USER at `https://github.com/USER.keys`. Whoever holds that account can log in, so `up` shows the keys' fingerprints and asks first. Without a terminal, add `--yes`. |
 | `--listen ADDR` | `127.0.0.1` | The address ssh is published on, such as a tailnet address. |
 | `--drm-master allow` | off | Lets the desktop take DRM master of a GPU that no display server holds (see [DRM master](#drm-master)). |
 
@@ -99,7 +99,7 @@ line in `settings` to take a new one, and then print the `ssh-config` block agai
 If the owner account can't be made, or sshd isn't running after the boot, `up` fails and
 prints that unit's journal. A key line that isn't a key causes this, for example. There would
 be no way in, so `up` stops the container rather than leave it running. It does the same if
-systemd doesn't finish booting in 3 minutes. Fix the input, such as with `up NAME --key FILE`,
+systemd doesn't finish booting in 3 minutes. Fix the input, such as with `up NAME --key FILE` or `--github USER`,
 and run `up` again.
 
 `down --purge` stops if Docker can't remove a volume, such as one another container uses. It

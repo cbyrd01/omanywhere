@@ -3,7 +3,7 @@
 # ssh. See docs/usage.md.
 #
 #   omanywhere up NAME [--gpu auto|none|nvidia|dri|dri:/dev/dri/cardN]
-#                      [--key FILE | --github USER] [--listen ADDR]
+#                      [--key FILE | --github USER [--yes]] [--listen ADDR]
 #                      [--drm-master allow]
 #   omanywhere down NAME [--purge [--yes]]
 #   omanywhere ssh-config NAME
@@ -33,7 +33,7 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/run-flags.bash"
 usage() {
   cat >&2 <<'EOF'
 usage: omanywhere up NAME [--gpu auto|none|nvidia|dri|dri:/dev/dri/cardN]
-                     [--key FILE | --github USER] [--listen ADDR] [--drm-master allow]
+                     [--key FILE | --github USER [--yes]] [--listen ADDR] [--drm-master allow]
        omanywhere down NAME [--purge [--yes]]
        omanywhere ssh-config NAME
        omanywhere status NAME
@@ -241,16 +241,24 @@ has_key() {
 
 # github_keys USER: print the public keys GitHub publishes for USER at
 # https://github.com/USER.keys, as ssh-import-id and cloud-init fetch them,
-# and say which they are. HTTPS only, redirects included.
+# and say which they are. HTTPS only, redirects included. Whoever holds USER's
+# account gets in, and a mistyped USER may be a stranger's, so it asks first,
+# as down --purge does: on a terminal, or --yes ($yes) without one.
 github_keys() {
-  local url=https://github.com/$1.keys keys fingerprints
+  local url=https://github.com/$1.keys keys fingerprints answer
+  # head caps a body sent with no Content-Length, which --max-filesize can't.
   keys=$(curl --fail --silent --show-error --location --proto =https --proto-redir =https \
-    --max-time 20 --max-filesize 1048576 "$url") || die "--github $1: couldn't fetch $url"
+    --max-time 20 --max-filesize 1048576 "$url" | head -c 1048576) || die "--github $1: couldn't fetch $url"
   has_key "$keys" || die "no ssh key for GitHub user $1: $url lists none"
   fingerprints=$(ssh-keygen -l -f /dev/stdin <<<"$keys" 2>&1) ||
     die "--github $1: $url isn't a list of public keys: $fingerprints"
-  say "using the keys GitHub user $1 publishes ($url):"
+  say "the keys GitHub user $1 publishes ($url):"
   echo "  ${fingerprints//$'\n'/$'\n'  }" >&2
+  if [[ -z $yes ]]; then
+    [[ -t 0 ]] || die "--github lets whoever holds GitHub user $1 log in; pass --yes to confirm without a terminal"
+    read -r -p "Let these keys log in to $container? [y/N] " answer
+    [[ $answer == [yY]* ]] || die "not using GitHub user $1's keys"
+  fi
   printf '%s\n' "$keys"
 }
 
@@ -367,7 +375,7 @@ endpoint() {
 # --- Commands.
 
 cmd_up() {
-  local keyfile='' github='' opt_gpu='' opt_listen='' opt_master='' state keys
+  local keyfile='' github='' yes='' opt_gpu='' opt_listen='' opt_master='' state keys
   set_name "${1:-}"
   shift
   while (($#)); do
@@ -384,6 +392,11 @@ cmd_up() {
         check github "${2:-}" --github
         github=$2
         ;;
+      --yes)
+        yes=1
+        shift
+        continue
+        ;;
       --listen)
         check listen "${2:-}" --listen
         opt_listen=$2
@@ -397,6 +410,7 @@ cmd_up() {
     shift 2
   done
   [[ -z $keyfile || -z $github ]] || die "--key and --github both give the keys: pass one"
+  [[ -z $yes || -n $github ]] || die "--yes confirms --github's keys: pass it with --github"
   docker image inspect "$image" >/dev/null 2>&1 || die "image $image not found: build it with make image"
 
   state=$(container_state)
@@ -480,7 +494,7 @@ If another program has taken port $port, free it and run up again, or delete the
     say "$unit is $(unit_state "$unit"), so there is no way in; its journal:"
     cexec journalctl -b -u "$unit" -o cat --no-pager -n 20 >&2 || true
     docker stop "$container" >/dev/null || true
-    die "stopped $container. Fix the input (up $name --key FILE for the keys) and run up again, or omanywhere down $name"
+    die "stopped $container. Fix the input (up $name --key FILE or --github USER for the keys) and run up again, or omanywhere down $name"
   done
   print_status "$system"
   echo
