@@ -1,4 +1,12 @@
 # Units that may fail when the image boots, one per line, each with a reason.
-# Empty: the omanywhere package skips the units that have no work in a
-# container (package/omanywhere/container-units), so a clean boot has no failed
-# unit and systemd reports `running`. Add a unit here only with its reason.
+# The omanywhere package skips the units that have no work in a container
+# (package/omanywhere/container-units), so a clean boot has no failed unit and
+# systemd reports `running`. Add a unit here only with its reason.
+#
+# polkit.service: D-Bus activated once the desktop runs (Omarchy's shell
+# registers its polkit agent). It runs as polkitd with a system call filter,
+# and systemd fails such a unit at step USER without CAP_SYS_ADMIN ("Failed to
+# keep CAP_SYS_ADMIN", systemd issue #34565). The desktop wants polkit, so it
+# isn't skipped; the fix is upstream's, or a drop-in that loosens polkit's
+# sandbox, which is Chris's call. tests/desktop.sh sees it fail.
+polkit.service

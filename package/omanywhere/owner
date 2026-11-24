@@ -1,8 +1,9 @@
 #!/bin/bash
 # Makes the container's owner: the one account that logs in over ssh and runs
 # Omarchy's desktop. omanywhere-owner.service runs it on every boot, before
-# sshd (which requires it) and the session, and it ends by writing the name to
-# /run/omanywhere/owner.
+# sshd (which requires it) and the session, whose User= it sets; it gives the
+# owner the groups of the container's DRM nodes, and it ends by writing the
+# name to /run/omanywhere/owner.
 #
 # Inputs. Each is read from the first of these that has it:
 #   1. a file under /run/secrets/ (a Docker or Compose secret) named after the
@@ -70,6 +71,30 @@ user_groups() {
   echo "$groups"
 }
 
+# dri_groups: a group for the gid of each DRM node in the container, which the
+# owner joins so the desktop session can open the card and render node. The
+# nodes keep the host's gids (Docker copies them, CDI sets them), which need
+# not match any group here; a gid the container has no group for gets one,
+# omanywhere-gpu-GID. The session's processes have only the owner's groups,
+# never PID 1's (docker --group-add, CDI's additionalGids), so the owner must
+# hold the gids themselves. Root's group is never given.
+dri_groups() {
+  local node gid group groups=()
+  for node in /dev/dri/card* /dev/dri/renderD*; do
+    [[ -c $node ]] || continue
+    gid=$(stat -c %g "$node")
+    ((gid != 0)) || continue
+    if ! group=$(getent group "$gid" | cut -d: -f1) || [[ -z $group ]]; then
+      group=omanywhere-gpu-$gid
+      groupadd -r -g "$gid" "$group"
+    fi
+    echo "DRM node $node: gid $gid, group $group" >&2
+    [[ " ${groups[*]} " == *" $group "* ]] || groups+=("$group")
+  done
+  local IFS=,
+  echo "${groups[*]}"
+}
+
 user=$(input OMANYWHERE_USER omarchy)
 uid=$(input OMANYWHERE_UID 1000)
 keys=$(input OMANYWHERE_AUTHORIZED_KEYS "" authorized_keys)
@@ -121,7 +146,9 @@ else
   fi
   useradd "$create_home" -d "$home" -u "$uid" -g "$uid" -s /bin/bash "$user"
 fi
-usermod -aG "$(user_groups)" "$user"
+owner_groups=$(user_groups)
+dri=$(dri_groups)
+usermod -aG "$owner_groups${dri:+,$dri}" "$user"
 echo "Owner $user (uid $uid) in groups $(id -nG "$user")"
 
 if [[ -n $password ]]; then
@@ -172,6 +199,16 @@ fi
 # when it finds an empty file there (see /usr/lib/tmpfiles.d/omanywhere.conf).
 if [[ ! -s /var/lib/omanywhere/machine-id ]]; then
   echo "Warning: the state volume had no machine-id file at boot, so this boot's machine-id isn't kept; the next boot's will be" >&2
+fi
+
+# The desktop session runs as the owner. systemd loaded the session unit
+# before the owner was known, so reload it when its User= changes.
+dropin=/run/systemd/system/omanywhere-session.service.d/50-owner.conf
+want=$(printf '# Written by /usr/lib/omanywhere/owner at boot.\n[Service]\nUser=%s' "$user")
+if [[ ! -f $dropin || $(<"$dropin") != "$want" ]]; then
+  install -D -m 0644 /dev/stdin "$dropin" <<<"$want"
+  systemctl daemon-reload
+  echo "The desktop session runs as $user"
 fi
 
 printf '%s\n' "$user" | install -m 0644 /dev/stdin /run/omanywhere/owner

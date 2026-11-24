@@ -34,13 +34,18 @@ Not started. The research and the approach are in `notes/` (local, not committed
 
 ## How it should work
 
-- Hyprland runs with `AQ_NO_KMS_REQUIREMENT=1` on a render node only (no card node, no outputs)
-  and creates its own headless output.
+- `omanywhere-session.service` starts Omarchy's Hyprland for the owner under uwsm, in a logind
+  session, in place of sddm. Hyprland needs a DRM card node: aquamarine allocates its buffers
+  through one even with no screen, and nothing reads `AQ_NO_KMS_REQUIREMENT`. With a GPU's card
+  (`--device nvidia.com/gpu=all`, or `/dev/dri`) every connector, the host's displays, is turned
+  off and Hyprland creates its own headless output. Without a card the session is skipped, and
+  the journal says which device is missing.
 - gliff-server (already in Omarchy's base packages) captures that output and injects input
   through Wayland, so the container needs no `uinput`, input devices or seat.
 - Access is ssh only (`ssh host gliff-server --stdio`), with keys only and no published ports.
   [Glifftop](https://github.com/cbyrd01/glifftop) or any other gliff client connects.
-- CPU-only hosts still need some DRM device today (for example `vkms`). See `notes/`.
+- CPU-only hosts still need some DRM device today: a `vkms` card the host loads, whose
+  connector is then the desktop's monitor. See `notes/`.
 
 ## Development
 
@@ -50,9 +55,13 @@ Everything runs in containers; the host needs only Docker and `make`.
 make hooks   # once per clone: gitleaks scans each commit's staged changes
 make lint    # shellcheck + gitleaks over the full history (what CI runs)
 make image   # cosign-verify the Arch base, then build omanywhere:dev (image/Containerfile)
-make test-boot  # boot the image under systemd with no privilege and check it (tests/boot.sh)
-make test-owner # the owner account, ssh, and recreating over the same volumes (tests/owner.sh)
-make test       # both
+make test-boot    # boot the image under systemd with no privilege and check it (tests/boot.sh)
+make test-owner   # the owner account, ssh, and recreating over the same volumes (tests/owner.sh)
+make test-desktop # the desktop session (tests/desktop.sh); with no DRM card, that it's skipped.
+                  # OMANYWHERE_TEST_DEVICES gives it a card: see the top of tests/desktop.sh
+make test         # all three
+make test-desktop-vm # the desktop on a vkms card, in a KVM guest that loads vkms in its own
+                     # kernel, never the host's (tests/vm/run; needs /dev/kvm and ~30 GB)
 ```
 
 The image adds one package of its own, `omanywhere` (`package/omanywhere/`), built in the

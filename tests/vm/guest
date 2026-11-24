@@ -1,0 +1,26 @@
+#!/bin/bash
+# Runs in the KVM guest (tests/vm/run): load vkms in the guest's own kernel,
+# load the image under test into the guest's Docker, and run
+# tests/desktop.sh with the vkms card. Output goes to /vm/out.
+set -euo pipefail
+
+out=/vm/out
+mkdir -p "$out"
+exec >"$out/guest.log" 2>&1
+trap 'echo $? >"$out/status"' EXIT
+
+echo "guest: $(uname -r), $(nproc) CPUs, $(free -g | awk '/^Mem:/ { print $2 }') GiB"
+modprobe vkms
+ls -l /dev/dri
+for card in /sys/class/drm/card*; do
+  echo "$card -> $(readlink -f "$card/device")"
+done
+
+image=$(cat /vm/image.name)
+if [[ $(docker image inspect -f '{{.Id}}' "$image" 2>/dev/null) != "$(cat /vm/image.id)" ]]; then
+  echo "loading $image"
+  docker load -i /vm/image.tar
+fi
+docker image inspect -f '{{.Id}}' "$image"
+
+IMAGE=$image OMANYWHERE_TEST_DEVICES="--device /dev/dri/card0" /tests/desktop.sh 2>&1 | tee "$out/desktop.log"

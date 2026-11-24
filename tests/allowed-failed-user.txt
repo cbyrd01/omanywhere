@@ -1,0 +1,4 @@
+# Units of the owner's user manager (systemctl --user) that may fail while the
+# desktop runs in a container, one per line, each with a reason. Read by
+# tests/desktop.sh. Add a unit here only with its reason.
+xdg-document-portal.service  # Flatpak's document portal mounts a FUSE file system at /run/user/UID/doc; an unprivileged container has no /dev/fuse and can't mount (no CAP_SYS_ADMIN). Only sandboxed (Flatpak) apps use it

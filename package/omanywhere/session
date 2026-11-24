@@ -1,0 +1,167 @@
+#!/bin/bash
+# The container's desktop: Omarchy's Hyprland for the owner, started by uwsm
+# the way Omarchy's session entry starts it, on the DRM card the container was
+# given. omanywhere-session.service runs it in three steps:
+#
+#   check    ExecCondition, as root. Skips the session (exit 1) when the
+#            container has no DRM card it can use, and says which device is
+#            missing. Hyprland can't run without one: aquamarine allocates its
+#            buffers through a DRM card (KMS) node, even with no screen.
+#   prepare  ExecStartPre, as root. Picks the card and writes Hyprland's
+#            monitor rules for it to /run/omanywhere/hypr/container.lua, which
+#            /usr/share/omanywhere/hypr/hyprland.lua loads after the owner's
+#            config.
+#   start    ExecStart, as the owner, in the logind session PAM opened. Sets
+#            what depends on this card, then execs uwsm.
+#
+# The card. A GPU's (nvidia, amdgpu, radeon, i915, xe, nouveau, virtio_gpu)
+# comes first, then a virtual one (vkms). Any other card, such as a firmware
+# framebuffer (simpledrm), is ignored. A GPU's connectors are the host's
+# displays: every one is turned off, so the container never lights or
+# modesets a host display (and while the host's own desktop holds the card's
+# DRM master, a modeset would fail and abort Hyprland), and a headless output
+# gives the desktop its monitor. A virtual card's connectors belong to the
+# container, so they stay on and are the desktop's monitor.
+set -euo pipefail
+
+readonly rules=/run/omanywhere/hypr/container.lua
+
+fail() {
+  echo "$*" >&2
+  exit 1
+}
+
+# card_sysfs NODE: the card's directory in sysfs, found by device number, so a
+# node renamed in the container still finds its card.
+card_sysfs() {
+  readlink -f "/sys/dev/char/$(stat -c '%Hr:%Lr' "$1")"
+}
+
+# card_kind SYSFS: gpu, virtual or other, then the driver's name.
+card_kind() {
+  local driver bus
+  driver=$(basename "$(readlink -f "$1/device/driver")")
+  bus=$(basename "$(readlink -f "$1/device/subsystem")")
+  case $driver in
+    nvidia | amdgpu | radeon | i915 | xe | nouveau | virtio_gpu)
+      echo "gpu $driver"
+      return
+      ;;
+  esac
+  # vkms is a platform driver up to Linux 6.14 and a faux device after, named
+  # after its configfs directory when made there; a faux card with connectors
+  # can only be a virtual one (vgem has none).
+  if [[ $driver == vkms || ($bus == faux && -n $(connectors "$1")) ]]; then
+    [[ $bus == faux ]] && driver=$(basename "$(readlink -f "$1/device")")
+    echo "virtual $driver"
+    return
+  fi
+  echo "other $driver"
+}
+
+# connectors SYSFS: the card's connectors, named as Hyprland names them
+# (/sys/class/drm/card1-DP-1 is DP-1).
+connectors() {
+  local connector card
+  card=$(basename "$1")
+  for connector in "/sys/class/drm/$card-"*; do
+    [[ -e $connector ]] || continue
+    connector=$(basename "$connector")
+    echo "${connector#"$card"-}"
+  done
+}
+
+# pick_card: print the card to use, its kind and driver ("/dev/dri/card1 gpu
+# nvidia"), or say why there is none and fail.
+pick_card() {
+  local node sys kind driver gpu='' virtual='' ignored=()
+  for node in /dev/dri/card*; do
+    [[ -c $node ]] || continue
+    sys=$(card_sysfs "$node") || continue
+    read -r kind driver < <(card_kind "$sys")
+    case $kind in
+      gpu) [[ -n $gpu ]] || gpu="$node gpu $driver" ;;
+      virtual) [[ -n $virtual ]] || virtual="$node virtual $driver" ;;
+      *) ignored+=("$node ($driver)") ;;
+    esac
+  done
+  if [[ -n $gpu || -n $virtual ]]; then
+    echo "${gpu:-$virtual}"
+    return
+  fi
+  if ((${#ignored[@]} == 0)); then
+    echo "no DRM card (/dev/dri/card*) in the container; pass a GPU (--device nvidia.com/gpu=all or /dev/dri) or a host vkms card" >&2
+  else
+    echo "no usable DRM card: ${ignored[*]} has no GPU or vkms driver; pass a GPU (--device nvidia.com/gpu=all or /dev/dri) or a host vkms card" >&2
+  fi
+  return 1
+}
+
+check() {
+  pick_card >/dev/null || exit 1
+}
+
+prepare() {
+  local node kind driver connector off=()
+  read -r node kind driver < <(pick_card) || fail "no DRM card to prepare for"
+  if [[ $kind == gpu ]]; then
+    while read -r connector; do
+      [[ $connector =~ ^[A-Za-z0-9-]+$ ]] || fail "unexpected connector name '$connector' on $node"
+      off+=("$connector")
+    done < <(connectors "$(card_sysfs "$node")")
+  fi
+  {
+    echo "-- Written by /usr/lib/omanywhere/session for this boot's DRM card, $node ($driver)."
+    echo "-- Loaded after the owner's config by /usr/share/omanywhere/hypr/hyprland.lua."
+    if [[ $kind == gpu ]]; then
+      echo
+      echo "-- The GPU's connectors are the host's displays: all off. A specific"
+      echo "-- output's rule beats Omarchy's output = \"\" rule in hypr/monitors.lua."
+      for connector in "${off[@]}"; do
+        echo "hl.monitor({ output = \"$connector\", disabled = true })"
+      done
+      echo
+      echo "-- With them off the desktop has no monitor, so make a headless one at"
+      echo "-- start, before any gliff client connects."
+      echo 'hl.on("hyprland.start", function()'
+      echo '  hl.exec_cmd("hyprctl output create headless")'
+      echo 'end)'
+    else
+      echo "-- A virtual card's connectors belong to the container: they stay on."
+    fi
+  } | install -D -m 0644 /dev/stdin "$rules"
+  if [[ $kind == gpu ]]; then
+    echo "Desktop on $node ($driver); the host's connectors off: ${off[*]:-none}; a headless output is the desktop's monitor"
+  else
+    echo "Desktop on $node ($driver), a virtual card; its connectors are the desktop's monitors"
+  fi
+}
+
+start() {
+  local owner node kind driver render
+  owner=$(cat /run/omanywhere/owner)
+  [[ $(id -un) == "$owner" ]] ||
+    fail "the session runs as the owner, $owner, not $(id -un): omanywhere-owner.service sets its User="
+  [[ -f $rules ]] || fail "no $rules: prepare did not run"
+  read -r node kind driver < <(pick_card) || exit 1
+  # aquamarine would otherwise open every card it finds.
+  export AQ_DRM_DEVICES=$node
+  # Mesa's EGL in a Wayland client takes the compositor's render node; a card
+  # with none (vkms) leaves it a null device and it crashes. Software GL then.
+  for render in /dev/dri/renderD* ''; do
+    [[ -n $render && -r $render && -w $render ]] && break
+  done
+  if [[ -z $render ]]; then
+    export LIBGL_ALWAYS_SOFTWARE=1
+    echo "No render node $owner can open: LIBGL_ALWAYS_SOFTWARE=1, GL renders on the CPU"
+  fi
+  echo "Starting Hyprland under uwsm for $owner on $node ($kind, $driver)"
+  # As Omarchy's session entry, /usr/share/wayland-sessions/hyprland-uwsm.desktop.
+  exec uwsm start -e -D Hyprland hyprland.desktop
+}
+
+shopt -s nullglob
+case ${1:-} in
+  check | prepare | start) "$1" ;;
+  *) fail "usage: $0 check|prepare|start" ;;
+esac

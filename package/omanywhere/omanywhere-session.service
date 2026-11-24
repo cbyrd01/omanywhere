@@ -1,0 +1,31 @@
+# The container's desktop: Omarchy's Hyprland for the owner, under uwsm, in a
+# logind session, on the DRM card the container was given. It takes the place
+# of Omarchy's display manager, sddm, which is skipped in a container. The
+# steps and how the card is chosen: /usr/lib/omanywhere/session.
+[Unit]
+Description=Omanywhere desktop session
+Documentation=file:/usr/lib/omanywhere/session
+# The owner unit makes the account and gives this unit its User=, in
+# /run/systemd/system/omanywhere-session.service.d/50-owner.conf.
+Requires=omanywhere-owner.service
+After=omanywhere-owner.service systemd-user-sessions.service systemd-logind.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+PAMName=login
+# A graphical session on seat0, as a display manager opens one. uwsm reads
+# the seat and session from it; seat0 has no VTs in a container.
+Environment=XDG_SEAT=seat0 XDG_SESSION_TYPE=wayland XDG_SESSION_CLASS=user
+SyslogIdentifier=omanywhere-session
+# check and prepare run as root (+), outside the PAM session.
+ExecCondition=+/usr/lib/omanywhere/session check
+ExecStartPre=+/usr/lib/omanywhere/session prepare
+ExecStart=/usr/lib/omanywhere/session start
+# The desktop is always there: after a log out or a crash it starts again.
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=graphical.target

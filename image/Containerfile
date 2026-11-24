@@ -92,12 +92,19 @@ RUN --mount=type=cache,target=/var/cache/pacman/pkg,sharing=locked \
 # omarchy-pkg-defaults lives in the omarchy package, so omarchy goes first.
 # mesa provides libva-mesa-driver (merged into it in 2024); naming it keeps the
 # driver list readable. No kernel: the container runs on the host's.
+# NVIDIA: the driver's userspace comes from the host through CDI at run time,
+# matching the host's kernel module, never from the image (no nvidia-utils).
+# CDI doesn't bring the VA-API driver, libva-nvidia-driver (NVDEC through the
+# host's libcuda/libnvcuvid), nor the Vulkan loader, vulkan-icd-loader, which
+# finds the host's ICD that CDI mounts and which gliff encodes through (Vulkan
+# Video).
 RUN --mount=type=cache,target=/var/cache/pacman/pkg,sharing=locked \
     pacman -S --noconfirm --needed omarchy && \
     defaults=$(OMARCHY_PATH=/usr/share/omarchy omarchy-pkg-defaults x86) && \
     test -n "$defaults" && \
     pacman -S --noconfirm --needed $defaults \
-      mesa vulkan-radeon vulkan-intel intel-media-driver libva-mesa-driver
+      mesa vulkan-radeon vulkan-intel intel-media-driver libva-mesa-driver \
+      libva-nvidia-driver vulkan-icd-loader
 
 # Omarchy's image build (install/helpers/image-target.sh): declare the target
 # in a root-owned manifest, then run the system setup with provisioning and

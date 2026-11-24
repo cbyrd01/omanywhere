@@ -5,7 +5,8 @@ GIT_COMMON_DIR := $(shell git rev-parse --path-format=absolute --git-common-dir)
 TOOLS = docker run --rm --network none -v "$(CURDIR):$(CURDIR):ro" \
 	-v "$(GIT_COMMON_DIR):$(GIT_COMMON_DIR):ro" -w "$(CURDIR)" $(TOOLS_IMAGE)
 
-.PHONY: lint tools shellcheck secrets secrets-staged hooks verify-base image test test-boot test-owner
+.PHONY: lint tools shellcheck secrets secrets-staged hooks verify-base image test test-boot test-owner \
+	test-desktop test-desktop-vm
 
 lint: shellcheck secrets
 
@@ -34,10 +35,20 @@ verify-base: tools
 image: verify-base
 	docker build -f image/Containerfile -t $(IMAGE) .
 
-test: test-boot test-owner
+test: test-boot test-owner test-desktop
 
 test-boot: image
 	IMAGE=$(IMAGE) tests/boot.sh
 
 test-owner: image
 	IMAGE=$(IMAGE) tests/owner.sh
+
+# OMANYWHERE_TEST_DEVICES gives the container its DRM card (see
+# tests/desktop.sh); without it, the test checks the no-device case.
+test-desktop: image
+	IMAGE=$(IMAGE) tests/desktop.sh
+
+# The CPU-only leg: tests/desktop.sh on a vkms card, in a KVM guest that loads
+# vkms in its own kernel (tests/vm/run). Needs /dev/kvm and about 30 GB.
+test-desktop-vm: image
+	IMAGE=$(IMAGE) BASE_IMAGE=$(BASE_IMAGE) tests/vm/run

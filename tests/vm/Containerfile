@@ -1,0 +1,42 @@
+# The KVM guest for tests/desktop.sh's CPU-only leg, and the QEMU that runs
+# it (tests/vm/run). A CPU-only host needs a vkms card, a kernel module; the
+# guest loads it in its own kernel, so the test host's display is never
+# touched (loading vkms on a desktop host would hot-plug a monitor into it).
+#
+# Arch Linux only: the same verified base as image/Containerfile (BASE_IMAGE,
+# from `make verify-base`), Arch's packages from Omarchy's stable mirror as
+# there: linux (the guest's kernel and its vkms module), docker, openssh
+# (ssh-keygen for the test), qemu-base and e2fsprogs (to make and boot the
+# guest's disk).
+ARG BASE_IMAGE
+FROM $BASE_IMAGE
+
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
+
+RUN --mount=type=cache,target=/var/cache/pacman/pkg,sharing=locked \
+    echo 'Server = https://stable-mirror.omarchy.org/$repo/os/$arch' >/etc/pacman.d/mirrorlist && \
+    pacman-key --init && \
+    pacman-key --populate archlinux && \
+    pacman -Syu --noconfirm --needed linux mkinitcpio docker openssh qemu-base e2fsprogs
+
+# A kernel and an initramfs to boot the guest with (no autodetect: the build
+# host's hardware is not the guest's).
+RUN kver=$(basename /usr/lib/modules/*) && \
+    mkinitcpio -k "$kver" -S autodetect,kms,keyboard,keymap,consolefont,microcode,plymouth \
+      -g /boot/initramfs-vm.img && \
+    cp "/usr/lib/modules/$kver/vmlinuz" /boot/vmlinuz-vm
+
+# The guest boots systemd and runs tests/vm/guest from the read-only share
+# "tests", writing to the share "vm"; then it powers off. systemd-firstboot
+# would stop the boot to ask for a timezone on the serial console.
+RUN printf '%s\n' 9pnet_virtio 9p >/etc/modules-load.d/omanywhere-vm.conf && \
+    printf '%s\n' \
+      'tests /tests 9p trans=virtio,version=9p2000.L,ro,x-systemd.after=systemd-modules-load.service 0 0' \
+      'vm /vm 9p trans=virtio,version=9p2000.L,msize=1048576,x-systemd.after=systemd-modules-load.service 0 0' \
+      >/etc/fstab && \
+    printf '%s\n' '[Unit]' 'Description=Omanywhere desktop test in the guest' \
+      'After=docker.service' 'Requires=docker.service' 'RequiresMountsFor=/tests /vm' \
+      '[Service]' 'Type=oneshot' 'ExecStart=/tests/vm/guest' 'ExecStopPost=/usr/bin/systemctl --no-block poweroff' \
+      '[Install]' 'WantedBy=multi-user.target' >/etc/systemd/system/omanywhere-vm-test.service && \
+    systemctl enable docker.service omanywhere-vm-test.service && \
+    systemctl mask systemd-firstboot.service

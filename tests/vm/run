@@ -1,0 +1,76 @@
+#!/bin/bash
+# Runs tests/desktop.sh's CPU-only leg in a KVM guest: the guest loads vkms
+# in its own kernel and runs the image under test in its own Docker with the
+# vkms card, so the host's display is never touched. QEMU runs in a container
+# with only /dev/kvm, as the calling user.
+#
+# Usage: tests/vm/run (IMAGE defaults to omanywhere:dev; BASE_IMAGE is
+# image/Containerfile's verified base, which `make test-desktop-vm` passes).
+# The guest's disk, kernel and a saved copy of the image go to
+# OMANYWHERE_VM_DIR (default ~/.cache/omanywhere-test-vm), about 30 GB, kept
+# for the next run; delete the directory to free the space.
+set -euo pipefail
+
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=tests/lib.sh
+source "$here/../lib.sh"
+
+: "${BASE_IMAGE:?BASE_IMAGE is not set: run make test-desktop-vm}"
+vm_image=omanywhere-test-vm
+dir=${OMANYWHERE_VM_DIR:-$HOME/.cache/omanywhere-test-vm}
+name=omanywhere-test-vm-$$
+check_name "$name"
+trap 'cleanup "$name"' EXIT
+
+[[ -c /dev/kvm && -r /dev/kvm && -w /dev/kvm ]] || fail "no usable /dev/kvm"
+docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "image $IMAGE not found (run make image)"
+mkdir -p "$dir"
+
+docker build -q --build-arg BASE_IMAGE="$BASE_IMAGE" -f "$here/Containerfile" -t "$vm_image" "$here" >/dev/null
+vm_id=$(docker image inspect -f '{{.Id}}' "$vm_image")
+
+# The guest's disk: the guest image's root as an ext4 file system, made again
+# when the guest image changes.
+if [[ ! -f $dir/root.img || $(cat "$dir/root.id" 2>/dev/null) != "$vm_id" ]]; then
+  echo "making the guest disk in $dir"
+  rm -f "$dir/root.img" "$dir/root.id"
+  docker create --name "$name" "$vm_image" true >/dev/null
+  # shellcheck disable=SC2016 # the script runs, and expands, in the container
+  docker export "$name" | docker run --rm -i --network none -v "$dir:/out" "$vm_image" bash -c '
+    set -euo pipefail
+    mkdir /r && tar -x -C /r
+    cp /r/boot/vmlinuz-vm /out/vmlinuz && cp /r/boot/initramfs-vm.img /out/initramfs.img
+    mke2fs -q -t ext4 -d /r -L root /out/root.img 40G
+    chown "$1" /out/vmlinuz /out/initramfs.img /out/root.img' bash "$(id -u):$(id -g)"
+  docker rm "$name" >/dev/null
+  echo "$vm_id" >"$dir/root.id"
+fi
+
+# The image under test, saved once per image id for the guest to load.
+image_id=$(docker image inspect -f '{{.Id}}' "$IMAGE")
+if [[ ! -f $dir/image.tar || $(cat "$dir/image.id" 2>/dev/null) != "$image_id" ]]; then
+  echo "saving $IMAGE to $dir/image.tar"
+  docker save -o "$dir/image.tar" "$IMAGE"
+  echo "$image_id" >"$dir/image.id"
+fi
+echo "$IMAGE" >"$dir/image.name"
+rm -rf "$dir/out"
+mkdir "$dir/out"
+
+echo "booting the guest (console: $dir/console.log)"
+docker run --rm --name "$name" --network none --user "$(id -u):$(id -g)" \
+  --group-add "$(stat -c %g /dev/kvm)" --device /dev/kvm \
+  -v "$dir:/vm" -v "$here/..:/tests:ro" "$vm_image" \
+  timeout 1800 qemu-system-x86_64 -enable-kvm -cpu host -m 8192 -smp 8 \
+  -nodefaults -vga none -display none -nic none -no-reboot \
+  -serial file:/vm/console.log \
+  -kernel /vm/vmlinuz -initrd /vm/initramfs.img \
+  -append 'root=/dev/vda rw console=ttyS0' \
+  -drive file=/vm/root.img,format=raw,if=virtio \
+  -virtfs local,path=/tests,mount_tag=tests,security_model=none,readonly=on \
+  -virtfs local,path=/vm,mount_tag=vm,security_model=none
+
+cat "$dir/out/guest.log" 2>/dev/null || fail "the guest wrote no log (console: $dir/console.log)"
+status=$(cat "$dir/out/status" 2>/dev/null) || fail "the guest did not finish the test"
+((status == 0)) || fail "the desktop test failed in the guest (exit $status)"
+echo "vm desktop test passed"
