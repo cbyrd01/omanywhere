@@ -70,6 +70,7 @@ for bad in dri: dri:card1 dri:/dev/dri/card dri:/dev/dri/renderD128 dri:/dev/dri
   fails "--gpu" up "$name" --gpu "$bad" --key "$tmp/id_ed25519.pub"
 done
 fails "--drm-master" up "$name" --drm-master yes --key "$tmp/id_ed25519.pub"
+fails "--sudo" up "$name" --sudo yes --key "$tmp/id_ed25519.pub"
 fails "--listen" up "$name" --listen 'not an address' --key "$tmp/id_ed25519.pub"
 fails "usage" frobnicate "$name"
 fails "usage" ssh_config "$name"
@@ -173,13 +174,13 @@ pass "--gpu: dri:/dev/dri/cardN passes that card and its own render node; NVIDIA
 # shellcheck disable=SC2016 # the script expands its own variables
 out=$(bash -c '
   source "$1"
-  settings=$2 listen=127.0.0.1 port=2222 gpu=dri:/dev/dri/card1 drm_master=
+  settings=$2 listen=127.0.0.1 port=2222 gpu=dri:/dev/dri/card1 drm_master= sudo=nopasswd
   save_settings
-  gpu=
+  gpu='' sudo=''
   load_settings
-  echo "$gpu"' bash "$cli" "$tmp/settings") || fail "could not save and load the settings"
-[[ $out == dri:/dev/dri/card1 ]] || fail "gpu=dri:/dev/dri/card1 came back from the settings as '$out'"
-pass "gpu=dri:/dev/dri/card1 is saved in the settings and read back"
+  echo "$gpu $sudo"' bash "$cli" "$tmp/settings") || fail "could not save and load the settings"
+[[ $out == "dri:/dev/dri/card1 nopasswd" ]] || fail "gpu=dri:/dev/dri/card1 and sudo=nopasswd came back from the settings as '$out'"
+pass "gpu=dri:/dev/dri/card1 and sudo=nopasswd are saved in the settings and read back"
 
 # --- A key line the owner unit rejects: up fails loudly, with the unit's own
 # words, and the container is left stopped, not running without a way in.
@@ -250,6 +251,7 @@ pass "config 0700, password 0600 (${#password} characters), not in argv, env or 
 out=$(cexec "$container" runuser -u "$user" -- cat /run/secrets/password 2>&1) && fail "the owner can read the password: $out"
 out=$(cexec "$container" runuser -u "$user" -- ls /run/secrets 2>&1) && fail "the owner can list /run/secrets: $out"
 pass "/run/secrets is root's (0700): the owner can neither read the password nor list the secrets"
+out=$(cexec "$container" runuser -u "$user" -- sudo -n true 2>&1) && fail "sudo ran without a password, with no --sudo"
 
 # ssh is published on loopback only, on the port the config keeps.
 port=$(sed -n 's/^port=//p' "$config/settings")
@@ -341,7 +343,12 @@ cleanup "$blocker"
 pass "up after down with port $port taken: failed, naming the port"
 
 # --- up again: a new container with the same port, password and host key.
-"$cli" up "$name" >/dev/null 2>&1 || fail "up after down failed"
+"$cli" up "$name" --sudo nopasswd >/dev/null 2>&1 || fail "up --sudo nopasswd after down failed"
+grep -qx 'sudo=nopasswd' "$config/settings" || fail "--sudo nopasswd is not in $config/settings"
+inspect '{{json .Config.Env}}' | grep -F '"OMANYWHERE_SUDO=nopasswd"' >/dev/null ||
+  fail "up --sudo nopasswd did not give the container OMANYWHERE_SUDO=nopasswd"
+out=$(cexec "$container" runuser -u "$user" -- sudo -n true 2>&1) || fail "up --sudo nopasswd: sudo still asks for a password: $out"
+pass "up --sudo nopasswd on the new container: kept in the settings, passed as OMANYWHERE_SUDO=nopasswd; sudo asks for no password"
 [[ $(docker port "$container" 22/tcp) == "127.0.0.1:$port" ]] || fail "the new container is not on port $port"
 [[ $(<"$config/password") == "$password" ]] || fail "the password changed"
 out=$(ssh -F "$tmp/ssh_config" -o StrictHostKeyChecking=yes "$container" id -un) ||

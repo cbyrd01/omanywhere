@@ -31,6 +31,10 @@
 #                               host's outputs; only for a host with no display
 #                               of its own (optional; without it the session
 #                               refuses such a GPU, see /usr/lib/omanywhere/session)
+#   OMANYWHERE_SUDO             nopasswd: sudo asks the owner for no password
+#                               (optional; without it sudo asks for the
+#                               password, as on an Omarchy install). The lock
+#                               screen still takes the password
 #
 # /etc comes from the image, so a new container has no account: it is made
 # again on every boot of a new container, with the same uid, over the home the
@@ -119,8 +123,9 @@ keys=$(input OMANYWHERE_AUTHORIZED_KEYS "" authorized_keys)
 password=$(input OMANYWHERE_PASSWORD "" password)
 tz=$(input TZ "")
 drm_master=$(input OMANYWHERE_DRM_MASTER "")
+sudo_mode=$(input OMANYWHERE_SUDO "")
 # Nothing this runs needs them in its environment, least of all the password.
-unset OMANYWHERE_USER OMANYWHERE_UID OMANYWHERE_AUTHORIZED_KEYS OMANYWHERE_PASSWORD TZ OMANYWHERE_DRM_MASTER
+unset OMANYWHERE_USER OMANYWHERE_UID OMANYWHERE_AUTHORIZED_KEYS OMANYWHERE_PASSWORD TZ OMANYWHERE_DRM_MASTER OMANYWHERE_SUDO
 
 # Check every input before changing anything.
 [[ $user =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || fail "OMANYWHERE_USER '$user' is not a valid login name"
@@ -141,6 +146,7 @@ done <<<"$keys"
   fail "no authorized key: set OMANYWHERE_AUTHORIZED_KEYS or mount /run/secrets/authorized_keys; ssh is the only way in"
 [[ $password != *$'\n'* ]] || fail "OMANYWHERE_PASSWORD has more than one line"
 [[ -z $drm_master || $drm_master == allow ]] || fail "OMANYWHERE_DRM_MASTER '$drm_master' is not allow (or unset)"
+[[ -z $sudo_mode || $sudo_mode == nopasswd ]] || fail "OMANYWHERE_SUDO '$sudo_mode' is not nopasswd (or unset)"
 if [[ -n $tz && ($tz == *..* || ! -f /usr/share/zoneinfo/$tz) ]]; then
   fail "TZ '$tz' is not a timezone in /usr/share/zoneinfo"
 fi
@@ -175,7 +181,23 @@ if [[ -n $password ]]; then
   printf '%s:%s\n' "$user" "$password" | chpasswd
 else
   passwd -l "$user" >/dev/null
-  echo "No password in /run/secrets/password: $user's password is locked, so sudo and the lock screen can't be used"
+  unusable='sudo and the lock screen'
+  [[ -z $sudo_mode ]] || unusable='the lock screen'
+  echo "No password in /run/secrets/password: $user's password is locked, so $unusable can't be used"
+fi
+
+# OMANYWHERE_SUDO=nopasswd: a rule of this container's own, read after the
+# wheel grant (00-omanywhere-wheel), so that it wins. Omarchy's own
+# passwordless rules (omarchy sudo passwordless) are its 99-omarchy-* files,
+# which it manages itself. Written each boot, or removed, from the input.
+nopasswd=/etc/sudoers.d/90-omanywhere-nopasswd
+if [[ -n $sudo_mode ]]; then
+  # $user is a checked login name, so the rule is always valid sudoers.
+  printf '# Written by /usr/lib/omanywhere/owner at boot: OMANYWHERE_SUDO=nopasswd.\n%s ALL=(ALL:ALL) NOPASSWD: ALL\n' "$user" |
+    install -m 0440 /dev/stdin "$nopasswd"
+  echo "sudo asks $user for no password (OMANYWHERE_SUDO=nopasswd)"
+else
+  rm -f "$nopasswd"
 fi
 
 # Root's, in a root-owned directory: sshd's StrictModes accepts nothing else.
