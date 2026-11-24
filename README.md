@@ -63,6 +63,9 @@ Estimates for one desktop, not yet tested at these limits:
 5. **Fix things upstream first.** If Omarchy, Hyprland or gliff needs a change, propose it there
    before adding a workaround here. Write the reason next to any workaround.
 
+[docs/differences.md](docs/differences.md) lists every place the image differs from Arch's
+image and a stock Omarchy install, and why.
+
 ## How it works
 
 - `omanywhere-session.service` starts Omarchy's Hyprland for the owner under uwsm, in a logind
