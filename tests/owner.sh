@@ -186,10 +186,7 @@ pass "no password given: the password is locked, and the journal says so"
 grep -qF "sudo asks $user for no password" <<<"$log" || fail "the journal does not say that sudo asks for no password"
 [[ $(cexec "$second" stat -c '%a %U' "$nopasswd") == "440 root" ]] || fail "$nopasswd is not root's, mode 0440"
 out=$(cexec "$second" runuser -u "$user" -- sudo -n true 2>&1) || fail "sudo asked for a password with OMANYWHERE_SUDO=nopasswd: $out"
-out=$(docker exec -e OMANYWHERE_SUDO= "$second" /usr/lib/omanywhere/owner 2>&1) || fail "the owner script failed with OMANYWHERE_SUDO unset: $out"
-cexec "$second" test ! -e "$nopasswd" || fail "$nopasswd is still there with OMANYWHERE_SUDO unset"
-out=$(cexec "$second" runuser -u "$user" -- sudo -n true 2>&1) && fail "sudo still ran without a password, with OMANYWHERE_SUDO unset"
-pass "OMANYWHERE_SUDO=nopasswd: sudo asks for no password ($nopasswd, root's, 0440); unset, the rule is removed"
+pass "OMANYWHERE_SUDO=nopasswd: sudo asks for no password ($nopasswd, root's, 0440)"
 
 second_key=$(check_ssh "$second")
 [[ $second_key == "$host_key" ]] || fail "the ssh host key changed on recreate"
@@ -198,6 +195,13 @@ pass "ssh key login works; host key and machine-id kept"
 out=$(ssh "${ssh_opts[@]}" -i "$tmp/own/id_ed25519" "$user@$(container_ip "$second")" 'id -un') ||
   fail "the key the owner added to ~/.ssh/authorized_keys no longer logs in"
 pass "the owner's own key in ~/.ssh/authorized_keys still logs in"
+
+# Run again without OMANYWHERE_SUDO, last, as a boot of this container would:
+# the rule is removed.
+out=$(docker exec -e OMANYWHERE_SUDO= "$second" /usr/lib/omanywhere/owner 2>&1) || fail "the owner script failed with OMANYWHERE_SUDO unset: $out"
+cexec "$second" test ! -e "$nopasswd" || fail "$nopasswd is still there with OMANYWHERE_SUDO unset"
+out=$(cexec "$second" runuser -u "$user" -- sudo -n true 2>&1) && fail "sudo still ran without a password, with OMANYWHERE_SUDO unset"
+pass "OMANYWHERE_SUDO unset: the rule is removed, and sudo asks for the password again"
 
 # --- No key at all: the unit fails and says why, and sshd stays down.
 start_container "$nokey"

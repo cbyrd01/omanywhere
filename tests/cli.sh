@@ -185,13 +185,12 @@ pass "gpu=dri:/dev/dri/card1 and sudo=nopasswd are saved in the settings and rea
 # --- A key line the owner unit rejects: up fails loudly, with the unit's own
 # words, and the container is left stopped, not running without a way in.
 # A port-picking container left by an interrupted earlier up (under the
-# name round 1 used) doesn't get in this up's way. This up makes the
-# container, with --sudo nopasswd, which the checks below follow.
+# name round 1 used) doesn't get in this up's way.
 stale=$container-port
 check_name "$stale"
 docker create --name "$stale" --entrypoint true "$IMAGE" >/dev/null
 printf 'ssh-ed25519 not-a-key\n' >"$tmp/bad.pub"
-out=$("$cli" up "$name" --gpu none --sudo nopasswd --key "$tmp/bad.pub" 2>&1) && fail "up with a bad key succeeded: $out"
+out=$("$cli" up "$name" --gpu none --key "$tmp/bad.pub" 2>&1) && fail "up with a bad key succeeded: $out"
 cleanup "$stale"
 [[ $out == *"line 1 is not an ssh public key"* ]] || fail "up did not show the owner unit's journal: $out"
 [[ $(docker inspect -f '{{.State.Running}}' "$container") == false ]] || fail "the container still runs after the owner unit failed"
@@ -246,11 +245,7 @@ pass "config 0700, password 0600 (${#password} characters), not in argv, env or 
 out=$(cexec "$container" runuser -u "$user" -- cat /run/secrets/password 2>&1) && fail "the owner can read the password: $out"
 out=$(cexec "$container" runuser -u "$user" -- ls /run/secrets 2>&1) && fail "the owner can list /run/secrets: $out"
 pass "/run/secrets is root's (0700): the owner can neither read the password nor list the secrets"
-grep -qx 'sudo=nopasswd' "$config/settings" || fail "--sudo nopasswd is not in $config/settings"
-inspect '{{json .Config.Env}}' | grep -F '"OMANYWHERE_SUDO=nopasswd"' >/dev/null ||
-  fail "up --sudo nopasswd did not give the container OMANYWHERE_SUDO=nopasswd"
-out=$(cexec "$container" runuser -u "$user" -- sudo -n true 2>&1) || fail "up --sudo nopasswd: sudo still asks for a password: $out"
-pass "up --sudo nopasswd: kept in the settings, passed as OMANYWHERE_SUDO=nopasswd; sudo asks for no password"
+out=$(cexec "$container" runuser -u "$user" -- sudo -n true 2>&1) && fail "sudo ran without a password, with no --sudo"
 
 # ssh is published on loopback only, on the port the config keeps.
 port=$(sed -n 's/^port=//p' "$config/settings")
@@ -342,7 +337,12 @@ cleanup "$blocker"
 pass "up after down with port $port taken: failed, naming the port"
 
 # --- up again: a new container with the same port, password and host key.
-"$cli" up "$name" >/dev/null 2>&1 || fail "up after down failed"
+"$cli" up "$name" --sudo nopasswd >/dev/null 2>&1 || fail "up --sudo nopasswd after down failed"
+grep -qx 'sudo=nopasswd' "$config/settings" || fail "--sudo nopasswd is not in $config/settings"
+inspect '{{json .Config.Env}}' | grep -F '"OMANYWHERE_SUDO=nopasswd"' >/dev/null ||
+  fail "up --sudo nopasswd did not give the container OMANYWHERE_SUDO=nopasswd"
+out=$(cexec "$container" runuser -u "$user" -- sudo -n true 2>&1) || fail "up --sudo nopasswd: sudo still asks for a password: $out"
+pass "up --sudo nopasswd on the new container: kept in the settings, passed as OMANYWHERE_SUDO=nopasswd; sudo asks for no password"
 [[ $(docker port "$container" 22/tcp) == "127.0.0.1:$port" ]] || fail "the new container is not on port $port"
 [[ $(<"$config/password") == "$password" ]] || fail "the password changed"
 out=$(ssh -F "$tmp/ssh_config" -o StrictHostKeyChecking=yes "$container" id -un) ||

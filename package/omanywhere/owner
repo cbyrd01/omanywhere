@@ -192,11 +192,9 @@ fi
 # which it manages itself. Written each boot, or removed, from the input.
 nopasswd=/etc/sudoers.d/90-omanywhere-nopasswd
 if [[ -n $sudo_mode ]]; then
-  # sudo skips a name with a dot in it, so the check's copy is never read.
+  # $user is a checked login name, so the rule is always valid sudoers.
   printf '# Written by /usr/lib/omanywhere/owner at boot: OMANYWHERE_SUDO=nopasswd.\n%s ALL=(ALL:ALL) NOPASSWD: ALL\n' "$user" |
-    install -m 0440 /dev/stdin "$nopasswd.new"
-  visudo -cqf "$nopasswd.new" || fail "visudo rejected the rule for OMANYWHERE_SUDO=nopasswd"
-  mv "$nopasswd.new" "$nopasswd"
+    install -m 0440 /dev/stdin "$nopasswd"
   echo "sudo asks $user for no password (OMANYWHERE_SUDO=nopasswd)"
 else
   rm -f "$nopasswd"

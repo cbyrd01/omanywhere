@@ -69,7 +69,7 @@ container, run `down NAME` and then `up NAME --option`.
 | `--github USER` | | Instead of `--key`: the public keys GitHub publishes for USER at `https://github.com/USER.keys`. Whoever holds that account can log in, so `up` shows the keys' fingerprints and asks first. Without a terminal, add `--yes`. |
 | `--listen ADDR` | `127.0.0.1` | The address ssh is published on, such as a tailnet address. |
 | `--drm-master allow` | off | Lets the desktop take DRM master of a GPU that no display server holds (see [DRM master](#drm-master)). |
-| `--sudo nopasswd` | off | sudo asks the owner for no password, as in Toolbox. The lock screen still takes the password. Any program running as the owner, a bad package or a browser exploit say, can then become root in the container without one; with rootful Docker, root in the container is uid 0 on the host, held back only by the container's limits. |
+| `--sudo nopasswd\|password` | `password` | With `nopasswd`, sudo asks the owner for no password, as in Toolbox; `password` asks again. Any program running as the owner, a bad package or a browser exploit say, can then become root in the container without one. As root it can also read the password file, so the lock screen no longer stops it. With rootful Docker, root in the container is uid 0 on the host, held back only by the container's limits. |
 
 `--key` and `--github` also work on a container that already exists. `up` rewrites its keys
 file, and the new keys take effect at the container's next start. Without either, the keys
