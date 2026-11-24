@@ -213,8 +213,8 @@ even when no screen is attached. `--gpu` chooses the card:
   nvidia-ctk cdi list                                  # expect nvidia.com/gpu=all
   ```
 
-  `nvidia-cdi-refresh` writes the spec to `/var/run/cdi`. After the first time, its `.path`
-  unit and boot run it again whenever the driver changes.
+  `nvidia-cdi-refresh` writes the spec to `/var/run/cdi`. The package's `.path` unit and boot
+  re-run it when the driver changes.
 - `dri` uses `--device /dev/dri`, which covers AMD and Intel GPUs and a host vkms card.
 - `none` uses no device. You get ssh and no desktop.
 
@@ -260,7 +260,7 @@ Start with `omanywhere status NAME`.
   llvmpipe, and gliff's probe passes the Vulkan Video encode:
 
   ```sh
-  ssh omanywhere-NAME 'grep -h "\]: Renderer:" /run/user/1000/hypr/*/hyprland.log'
+  ssh omanywhere-NAME 'grep -h "\]: Renderer:" /run/user/1000/hypr/*/hyprland.log | sort -u'
   ssh omanywhere-NAME gliff-probe all | grep 'PASS Vulkan Video'
   ```
 
