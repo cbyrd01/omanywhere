@@ -118,6 +118,13 @@ out=$(cexec "$first" runuser -u "$user" -- env HOME=/tmp/chromium-test \
   fail "Chromium failed in the container: $out"
 grep -F '<p>sandboxed</p>' >/dev/null <<<"$out" || fail "Chromium did not render the page: $out"
 pass "Chromium runs with its sandbox (lib/seccomp.json)"
+# The namespaces it allows don't reach netfilter: Docker's default keeps
+# nf_tables from code with no CAP_SYS_ADMIN, and so does lib/seccomp.json.
+out=$(cexec "$first" runuser -u "$user" -- unshare -Urn nft list tables 2>&1) &&
+  fail "nft worked in a user and network namespace: $out"
+grep -F "Operation not permitted" >/dev/null <<<"$out" ||
+  fail "nft in a user and network namespace failed, but not on seccomp: $out"
+pass "netfilter is out of reach from a user namespace (lib/seccomp.json)"
 
 # Omarchy's refresh puts its own pacman.conf back; pacman then can't download
 # in a container until the owner's hook, run by omarchy-hook as Omarchy's

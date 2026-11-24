@@ -1,7 +1,10 @@
 #!/bin/bash
 # Make lib/seccomp.json: Docker's default seccomp profile (moby, Apache License
 # 2.0) for TAG, plus one rule that allows clone and unshare with namespace
-# flags. docs/usage.md ("The run flags") says why.
+# flags, and two cuts that keep netfilter out of reach of the namespaces that
+# rule allows: no netlink socket with protocol 12 (NETLINK_NETFILTER), and no
+# socketcall (i386), whose arguments seccomp can't see. docs/usage.md ("The run
+# flags") says why.
 #
 # Usage: scripts/seccomp-profile [TAG] (default docker-v29.9.2). Rerun it when
 # Docker's default profile changes, and commit the result.
@@ -16,7 +19,19 @@ profile=$(curl -fsSL --proto =https --proto-redir =https --max-time 30 "$url")
 python3 -I /dev/fd/3 3<<'EOF' <<<"$profile" >"$out.new"
 import json, sys
 profile = json.load(sys.stdin)
-profile["syscalls"].append({
+rules = profile["syscalls"]
+# socketcall sits in the one unconditional list.
+[everything] = [r for r in rules if "socketcall" in r["names"]]
+assert not everything.get("args") and everything["action"] == "SCMP_ACT_ALLOW"
+everything["names"].remove("socketcall")
+# Docker allows socket() for address families below 38 (AF_NETLINK is 16)
+# and a few above, one by one. Protocol 12 is NETLINK_NETFILTER in netlink;
+# no other family below 38 uses it outside raw IPv4/IPv6 sockets.
+[families] = [r for r in rules if r["names"] == ["socket"]
+              and r.get("args") == [{"index": 0, "value": 38, "op": "SCMP_CMP_LT"}]]
+families["args"].append({"index": 2, "value": 12, "op": "SCMP_CMP_NE"})
+families["comment"] = "omanywhere: no NETLINK_NETFILTER (docs/usage.md)"
+rules.append({
     "names": ["clone", "unshare"], "action": "SCMP_ACT_ALLOW",
     "comment": "omanywhere: namespaces, for the Chromium sandbox (docs/usage.md)",
 })
