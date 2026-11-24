@@ -11,16 +11,20 @@
 #      answer to the short names /run/secrets/authorized_keys and
 #      /run/secrets/password, checked after the long ones;
 #   2. the container's environment (docker run -e), which the unit passes in
-#      with PassEnvironment=;
+#      with PassEnvironment=; never for the password (see below);
 #   3. the default.
-# A file's trailing newlines are dropped. The password only ever goes to
-# chpasswd on its standard input: never into an argument or the journal.
+# A file's trailing newlines are dropped. The password is taken only from a
+# file: in the environment, docker inspect and the host's process list (the
+# docker run command line) would show it, so the script refuses it there. It
+# only ever goes to chpasswd on its standard input: never into an argument
+# or the journal.
 #
 #   OMANYWHERE_USER             login name (default omarchy)
 #   OMANYWHERE_UID              uid, and gid of the user's own group (default 1000)
 #   OMANYWHERE_AUTHORIZED_KEYS  ssh public keys, one per line (required)
-#   OMANYWHERE_PASSWORD         password for sudo and the lock screen (optional;
-#                               without one the password is locked)
+#   OMANYWHERE_PASSWORD         password for sudo and the lock screen, as a file
+#                               only (optional; without one the password is
+#                               locked)
 #   TZ                          timezone, such as Europe/Paris (optional)
 #   OMANYWHERE_DRM_MASTER       allow: the desktop may take DRM master of a GPU
 #                               no display server holds, which turns off the
@@ -105,6 +109,10 @@ dri_groups() {
   echo "${groups[*]}"
 }
 
+if [[ -v OMANYWHERE_PASSWORD ]]; then
+  unset OMANYWHERE_PASSWORD
+  fail "OMANYWHERE_PASSWORD is in the environment, where docker inspect and the host's process list show it; give the password as the file /run/secrets/password instead (a read-only bind mount under --tmpfs /run/secrets:mode=0700)"
+fi
 user=$(input OMANYWHERE_USER omarchy)
 uid=$(input OMANYWHERE_UID 1000)
 keys=$(input OMANYWHERE_AUTHORIZED_KEYS "" authorized_keys)
@@ -167,7 +175,7 @@ if [[ -n $password ]]; then
   printf '%s:%s\n' "$user" "$password" | chpasswd
 else
   passwd -l "$user" >/dev/null
-  echo "No OMANYWHERE_PASSWORD: $user's password is locked, so sudo and the lock screen can't be used"
+  echo "No password in /run/secrets/password: $user's password is locked, so sudo and the lock screen can't be used"
 fi
 
 # Root's, in a root-owned directory: sshd's StrictModes accepts nothing else.

@@ -89,14 +89,14 @@ docker run -d --tty --cgroupns=private --security-opt writable-cgroups=true \
 no `--cap-add`, and no host network or cgroups.
 
 The `omanywhere` package (`package/omanywhere/`) makes the owner account at boot from these
-inputs:
+inputs (`package/omanywhere/owner` has the details):
 
-- `OMANYWHERE_USER`, `OMANYWHERE_UID`, `TZ` and `OMANYWHERE_DRM_MASTER`;
-- `OMANYWHERE_AUTHORIZED_KEYS`, or the file `/run/secrets/authorized_keys`;
-- `OMANYWHERE_PASSWORD`, or the file `/run/secrets/password`.
-
-Give them with `docker run -e`, or as files under `/run/secrets/` (see
-`package/omanywhere/owner`).
+- `OMANYWHERE_USER`, `OMANYWHERE_UID`, `TZ` and `OMANYWHERE_DRM_MASTER`, with `docker run -e`;
+- the ssh keys: the file `/run/secrets/authorized_keys`, or `OMANYWHERE_AUTHORIZED_KEYS`;
+- the password for sudo and the lock screen: only the file `/run/secrets/password`, bound
+  read-only inside the root-only `/run/secrets` tmpfs as above. The owner unit fails if
+  `OMANYWHERE_PASSWORD` is in the environment, where `docker inspect` and the host's process
+  list would show it. With no password file, the owner's password is locked.
 
 The keys given to the container are authoritative, and are set again on every boot. sshd
 reads them from `/run/omanywhere/authorized_keys/`. Keys that the owner adds to
