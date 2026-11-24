@@ -184,7 +184,8 @@ gpu_args() {
       gpu_note="/dev/dri (${cards[*]})"
       ;;
     # One card, and its own render node: each container on a CPU-only host
-    # needs a vkms card of its own (a card has one DRM master).
+    # needs a vkms card of its own (the desktop must be its DRM master, and a
+    # card has one).
     dri:*)
       card=${1#dri:/dev/dri/}
       [[ -c $dev_dri/$card ]] || die "--gpu $1: this host has no character device /dev/dri/$card"

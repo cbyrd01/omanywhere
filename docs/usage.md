@@ -244,12 +244,46 @@ draws on a headless output instead. Rendering and encoding run on the GPU.
 
 **CPU-only host.** The host must provide a virtual card: `modprobe vkms`, kept across boots
 with a file in `/etc/modules-load.d/`. vkms's connector is the desktop's monitor. Each
-container needs a vkms card of its own, because a card has only one DRM master (vkms's configfs
-makes more than one). Give each container its card with `--gpu dri:/dev/dri/cardN`, since
+container needs a vkms card of its own, because the desktop must be the card's DRM master and a
+card has only one. Give each container its card with `--gpu dri:/dev/dri/cardN`, since
 `--gpu dri` passes every card. Hyprland renders with llvmpipe and gliff encodes with OpenH264,
 which costs about 2.5 to 3.5 cores for an active 1080p session and almost nothing when the
-screen is still. Don't load vkms on a machine
-whose own desktop you are using. It adds a monitor to that desktop.
+screen is still.
+
+On a host with a desktop of its own, that desktop takes every new card on its seat as a
+monitor and becomes its DRM master, and the container's session then refuses the card. Before
+loading vkms, add this udev rule as `/etc/udev/rules.d/72-omanywhere-vkms.rules` and run
+`sudo udevadm control --reload`, so vkms cards stay off the host's seat:
+
+```
+# vkms cards are for containers' desktops: keep them off the host's seat.
+SUBSYSTEM=="drm", KERNEL=="card[0-9]*", DRIVERS=="vkms|faux_driver", TAG-="seat", TAG-="master-of-seat", TAG-="uaccess", ENV{ID_SEAT}="omanywhere"
+```
+
+A card made before the rule stays on the seat until vkms is unloaded or the host reboots.
+
+`modprobe vkms` makes one card. Where vkms has configfs (`/sys/kernel/config/vkms` exists),
+make one more per container, named for it (here `desk`), in a root shell (`sudo -i`):
+
+```sh
+d=/sys/kernel/config/vkms/omanywhere-desk
+mkdir $d $d/planes/plane0 $d/crtcs/crtc0 $d/encoders/encoder0 $d/connectors/connector0
+echo 1 >$d/planes/plane0/type   # primary
+ln -s $d/crtcs/crtc0 $d/planes/plane0/possible_crtcs/
+ln -s $d/crtcs/crtc0 $d/encoders/encoder0/possible_crtcs/
+ln -s $d/encoders/encoder0 $d/connectors/connector0/possible_encoders/
+echo 1 >$d/enabled
+ls /sys/devices/faux/omanywhere-desk/drm/   # its cardN
+```
+
+configfs cards don't survive a reboot. To remove one sooner, after `down NAME`:
+
+```sh
+echo 0 >$d/enabled
+rm $d/planes/plane0/possible_crtcs/crtc0 $d/encoders/encoder0/possible_crtcs/crtc0 \
+  $d/connectors/connector0/possible_encoders/encoder0
+rmdir $d/planes/plane0 $d/crtcs/crtc0 $d/encoders/encoder0 $d/connectors/connector0 $d
+```
 
 ## DRM master
 
@@ -263,8 +297,13 @@ logged out. So the session refuses such a GPU and says why in `status`, in `dock
 in the journal.
 
 On a host with no display of its own, such as a server GPU, allow it with
-`up NAME --drm-master allow` (the container gets `OMANYWHERE_DRM_MASTER=allow`). vkms cards
-are exempt, because their connectors belong to the container.
+`up NAME --drm-master allow` (the container gets `OMANYWHERE_DRM_MASTER=allow`).
+
+A vkms card is the other way round. Its connector belongs to the container, and the desktop
+must be its master to draw on it. When another process holds it, Hyprland starts but every
+modeset fails and its monitor stays at 0x0, so the session passes over such a card, takes the
+next free one, and says why when none is left. On a host with a desktop of its own, that process
+is the host's desktop: see the udev rule under [CPU and GPU hosts](#cpu-and-gpu-hosts).
 
 The guard covers only Hyprland's start. The owner is in the card's group, so any process in
 the container can open the card. While no host display server holds master (at a text
@@ -283,6 +322,9 @@ Start with `omanywhere status NAME`.
   [CPU and GPU hosts](#cpu-and-gpu-hosts)).
 - **`desktop skipped: no display server holds DRM master ...`.** See [DRM master](#drm-master).
   On a desktop host, log in to the host's desktop, then `docker restart omanywhere-NAME`.
+- **`no usable DRM card: ... (vkms: held by another process ...)`.** See
+  [DRM master](#drm-master), then give the container a new card: `down NAME`, then
+  `up NAME --gpu dri:/dev/dri/cardN`.
 - **`owner failed`.** Run `docker exec omanywhere-NAME journalctl -b -u omanywhere-owner`.
   Usually a key line isn't a key.
 - **The desktop restarts, or is `failed`.** Run `docker exec omanywhere-NAME journalctl -b -u
