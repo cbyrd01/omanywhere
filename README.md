@@ -91,7 +91,8 @@ no `--cap-add`, and no host network or cgroups.
 The `omanywhere` package (`package/omanywhere/`) makes the owner account at boot from these
 inputs (`package/omanywhere/owner` has the details):
 
-- `OMANYWHERE_USER`, `OMANYWHERE_UID`, `TZ` and `OMANYWHERE_DRM_MASTER`, with `docker run -e`;
+- `OMANYWHERE_USER`, `OMANYWHERE_UID`, `TZ`, `OMANYWHERE_DRM_MASTER` and `OMANYWHERE_SUDO`
+  (`nopasswd`: sudo asks the owner for no password), with `docker run -e`;
 - the ssh keys: the file `/run/secrets/authorized_keys`, or `OMANYWHERE_AUTHORIZED_KEYS`;
 - the password for sudo and the lock screen: only the file `/run/secrets/password`, bound
   read-only inside the root-only `/run/secrets` tmpfs as above. The owner unit fails if
