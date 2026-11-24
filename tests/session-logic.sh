@@ -96,17 +96,60 @@ expect "guard: GPU, no master, allowed" "$(guarded gpu free allow)" \
   "0 omanywhere-session: no display server holds DRM master on /dev/dri/card9; taking it, as OMANYWHERE_DRM_MASTER=allow says"
 expect "guard: virtual card, never probed" "$(guarded virtual never '')" "0 (nothing)"
 
+# How gliff-server captures and encodes over ssh: on the GPU only when the
+# chosen card has a render node of its own in the container, on the CPU (with
+# frames read back into shared memory) otherwise. gliff's default, gpu,
+# errors rather than falls back without one.
+expect "gliff: a GPU with its render node" "$(gliff_env gpu /dev/dri/renderD128)" "GLIFF_VIDEO=gpu GLIFF_CAPTURE=auto"
+expect "gliff: a GPU without a render node" "$(gliff_env gpu '')" "GLIFF_VIDEO=cpu GLIFF_CAPTURE=shm"
+expect "gliff: a virtual card" "$(gliff_env virtual '')" "GLIFF_VIDEO=cpu GLIFF_CAPTURE=shm"
+
+# render_node finds the card's own render node in the container by device
+# number. /dev/null stands in for a render node: a character device whose
+# number the made-up sysfs gives.
+dri_dir=$tmp/dri
+mkdir -p "$dri_dir" "$tmp/devices/pci/0000:01:00.0/drm/renderD128"
+echo 1:3 >"$tmp/devices/pci/0000:01:00.0/drm/renderD128/dev"
+expect "render node: none in the container" "$(render_node "$drm_class/card0")" ""
+touch "$dri_dir/renderD128"
+expect "render node: not a device" "$(render_node "$drm_class/card0")" ""
+ln -sfn /dev/zero "$dri_dir/renderD128"
+expect "render node: another device's number" "$(render_node "$drm_class/card0")" ""
+ln -sfn /dev/null "$dri_dir/renderD128"
+expect "render node: the card's own" "$(render_node "$drm_class/card0")" "$dri_dir/renderD128"
+expect "render node: a card without one" "$(render_node "$drm_class/card1")" ""
+
 # The monitor rules for a GPU: the card's connectors at start, and any name
 # the kernel gives a connector, are turned off; Hyprland's own outputs,
-# HEADLESS-N and gliff's gliff-N, never are.
+# HEADLESS-N and gliff's gliff-N, never are. prepare also writes the gliff
+# environment sshd gives ssh sessions, for every kind of card, and has sshd
+# read it again (reload_sshd).
 docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "image $IMAGE not found (run make image)"
 env_file=$tmp/session.env
 rules=$tmp/container.lua
-printf '%s\n' OMANYWHERE_CARD=/dev/dri/card1 OMANYWHERE_CARD_KIND=gpu OMANYWHERE_CARD_DRIVER=nvidia >"$env_file"
+sshd_env=$tmp/sshd/gliff.conf
 card_sysfs() {
-  echo "$drm_class/card1"
+  echo "$drm_class/${1##*/}"
 }
-(prepare) 2>/dev/null || fail "prepare failed"
+# A stand-in that notes the reload: this runs on the test host, whose sshd
+# must never be touched.
+reload_sshd() {
+  echo reload >>"$tmp/reloads"
+}
+# prepared CARD KIND DRIVER: run prepare for that choice; print the SetEnv
+# line it wrote for sshd, once it has asked sshd to reload, and only then.
+prepared() {
+  rm -f "$sshd_env" "$tmp/reloads"
+  printf '%s\n' "OMANYWHERE_CARD=/dev/dri/$1" "OMANYWHERE_CARD_KIND=$2" "OMANYWHERE_CARD_DRIVER=$3" >"$env_file"
+  (prepare) 2>/dev/null || fail "prepare failed on $1 ($2, $3)"
+  [[ $(cat "$tmp/reloads" 2>/dev/null) == reload ]] || fail "prepare on $1 did not reload sshd once"
+  [[ $(stat -c %a "${sshd_env%/*}") == 755 ]] || fail "prepare left ${sshd_env%/*} other than 0755"
+  grep -v '^#' "$sshd_env"
+}
+expect "sshd's gliff environment, virtual card" "$(prepared card3 virtual vkms)" "SetEnv GLIFF_VIDEO=cpu GLIFF_CAPTURE=shm"
+expect "sshd's gliff environment, GPU with a render node" "$(prepared card0 gpu amdgpu)" "SetEnv GLIFF_VIDEO=gpu GLIFF_CAPTURE=auto"
+# Last: the GPU whose monitor rules the Lua below runs.
+expect "sshd's gliff environment, GPU without a render node" "$(prepared card1 gpu nvidia)" "SetEnv GLIFF_VIDEO=cpu GLIFF_CAPTURE=shm"
 cat >"$tmp/before.lua" <<'LUA'
 local off, handlers = {}, {}
 hl = {

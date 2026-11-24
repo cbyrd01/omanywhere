@@ -4,11 +4,11 @@
 Description=Omanywhere desktop test in the guest
 After=docker.service
 Requires=docker.service
-RequiresMountsFor=/tests /vm
+RequiresMountsFor=/repo /vm
 
 [Service]
 Type=oneshot
-ExecStart=/tests/vm/guest
+ExecStart=/repo/tests/vm/guest
 ExecStopPost=/usr/bin/systemctl --no-block poweroff
 
 [Install]

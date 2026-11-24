@@ -11,7 +11,10 @@
 #   prepare  ExecStartPre, as root. Writes Hyprland's monitor rules for the
 #            card to /run/omanywhere/hypr/container.lua, which
 #            /usr/share/omanywhere/hypr/hyprland.lua loads after the owner's
-#            config.
+#            config, and how gliff-server should capture and encode on it to
+#            /run/omanywhere/sshd/gliff.conf, which sshd includes (see
+#            gliff_env); then restarts sshd, if it runs or is starting, to
+#            read it (see reload_sshd).
 #   start    ExecStart, as the owner, in the logind session PAM opened. Reads
 #            the choice and execs uwsm.
 #
@@ -47,11 +50,13 @@
 # draft: notes/upstream/aquamarine-headless-without-kms.md).
 set -euo pipefail
 
-# Where the choice, the monitor rules, the cards' connectors and the
-# nvidia_drm modeset flag live (plain variables, so tests/session-logic.sh
-# can point them at a made-up tree).
+# Where the choice, the monitor rules, sshd's gliff environment, the cards'
+# connectors, the render nodes and the nvidia_drm modeset flag live (plain
+# variables, so tests/session-logic.sh can point them at a made-up tree).
 env_file=/run/omanywhere/session.env
 rules=/run/omanywhere/hypr/container.lua
+sshd_env=/run/omanywhere/sshd/gliff.conf
+dri_dir=/dev/dri
 drm_class=/sys/class/drm
 nvidia_modeset=/sys/module/nvidia_drm/parameters/modeset
 
@@ -166,12 +171,60 @@ guard_master() {
   [[ $master != free ]] || say "no display server holds DRM master on $node; taking it, as OMANYWHERE_DRM_MASTER=allow says"
 }
 
+# render_node SYSFS: the container's node for the card's own render node
+# (the one on the same device), found by device number; nothing if the card
+# has none (vkms, bochs) or the container wasn't given it.
+render_node() {
+  local sys node
+  for sys in "$1"/device/drm/renderD*; do
+    [[ -f $sys/dev ]] || continue
+    for node in "$dri_dir"/renderD*; do
+      if [[ -c $node && $(stat -L -c '%Hr:%Lr' "$node") == "$(<"$sys/dev")" ]]; then
+        echo "$node"
+        return
+      fi
+    done
+  done
+}
+
+# gliff_env KIND RENDER: how gliff-server captures and encodes the desktop on
+# a card of KIND whose own render node is RENDER (empty: none). gliff-server
+# reads GLIFF_VIDEO and GLIFF_CAPTURE, and its default, gpu, needs a render
+# node it can run Vulkan and VA-API on: without one it errors rather than
+# falling back to the CPU as its --help says (gliff 0.4.3; upstream draft:
+# notes/upstream/from-spikes.md). With no render node there is no GPU to
+# capture dmabufs with either, so Hyprland copies each frame into shared
+# memory (shm), which takes gliff's CPU pipeline (OpenH264); that's what the
+# CPU-only spike on vkms needed. sshd gives these to every ssh session, so a
+# plain `gliff --headless` client needs no flags.
+gliff_env() {
+  if [[ $1 == gpu && -n $2 ]]; then
+    echo "GLIFF_VIDEO=gpu GLIFF_CAPTURE=auto"
+  else
+    echo "GLIFF_VIDEO=cpu GLIFF_CAPTURE=shm"
+  fi
+}
+
+# reload_sshd: have sshd read its config again, the gliff environment
+# included, if it has read it already. A restart, not a reload: sshd may
+# still be starting (activating) now, having read its config before the file
+# existed, and systemd drops a try-reload for a unit that isn't active yet,
+# but keeps a try-restart's job for an activating one (seen with systemd 262,
+# sshd held in start-post: try-reload-or-restart left the same sshd running,
+# try-restart started a new one). sshd's KillMode=process keeps the sessions
+# already open. A try-restart starts nothing: an sshd that hasn't started
+# reads the file when it does. --no-block, so the session never waits on
+# sshd.
+reload_sshd() {
+  systemctl --no-block try-restart sshd.service
+}
+
 check() {
   local node sys kind driver why gpu=() virtual=() ignored=()
   # Exit 1 skips the session, so anything unexpected fails it instead.
   set -E
   trap 'say "check failed at line $LINENO"; exit 255' ERR
-  rm -f "$env_file"
+  rm -f "$env_file" "$sshd_env"
   for node in /dev/dri/card*; do
     [[ -c $node ]] || continue
     sys=$(card_sysfs "$node")
@@ -213,6 +266,20 @@ prepare() {
   local OMANYWHERE_CARD OMANYWHERE_CARD_KIND OMANYWHERE_CARD_DRIVER connector off=()
   # shellcheck source=/dev/null # written by check, as root
   source "$env_file"
+  local render gliff
+  render=$(render_node "$(card_sysfs "$OMANYWHERE_CARD")")
+  gliff=$(gliff_env "$OMANYWHERE_CARD_KIND" "$render")
+  # sshd includes what's there, so only root may write to it.
+  install -d -m 0755 "${sshd_env%/*}"
+  install -m 0644 /dev/stdin "$sshd_env" <<EOF
+# Written by /usr/lib/omanywhere/session for this boot's DRM card,
+# $OMANYWHERE_CARD ($OMANYWHERE_CARD_KIND, render node: ${render:-none}): how
+# gliff-server, started over ssh, captures and encodes the desktop.
+# /etc/ssh/sshd_config.d/10-omanywhere.conf includes it.
+SetEnv $gliff
+EOF
+  say "gliff over ssh: $gliff (render node: ${render:-none})"
+  reload_sshd || say "could not restart sshd; ssh sessions get the gliff environment once it restarts"
   if [[ $OMANYWHERE_CARD_KIND == virtual ]]; then
     install -D -m 0644 /dev/stdin "$rules" <<EOF
 -- Written by /usr/lib/omanywhere/session for this boot's DRM card,

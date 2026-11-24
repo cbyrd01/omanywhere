@@ -1,13 +1,17 @@
 #!/bin/bash
 # Runs in the KVM guest (tests/vm/run): load the image under test into the
-# guest's Docker and run tests/desktop.sh's guest legs, all in the guest's
-# own kernel. Output goes to /vm/out.
-#   1. QEMU's bochs-display, a GPU no display server is DRM master of: the
-#      session refuses it (its master would blank a host's outputs).
-#   2. The same with OMANYWHERE_DRM_MASTER=allow: the session takes it, and
-#      still turns its connector off for a headless output.
-#   3. vkms, the CPU-only leg, after the GPU is unbound: both name their
-#      connector Virtual-1, and the safety check can't tell them apart.
+# guest's Docker and run the guest legs, all in the guest's own kernel.
+# Output goes to /vm/out. /vm/legs says which legs run: desktop, gliff or both.
+#   desktop 1. QEMU's bochs-display, a GPU no display server is DRM master of:
+#              the session refuses it (its master would blank a host's
+#              outputs).
+#           2. The same with OMANYWHERE_DRM_MASTER=allow: the session takes it,
+#              and still turns its connector off for a headless output.
+#           3. vkms, the CPU-only leg, after the GPU is unbound: both name
+#              their connector Virtual-1, and the safety check can't tell them
+#              apart.
+#   gliff      tests/gliff.sh on vkms, after the GPU is unbound: bin/omanywhere
+#              up --gpu auto picks /dev/dri, and gliff encodes on the CPU.
 set -euo pipefail
 
 out=/vm/out
@@ -31,13 +35,15 @@ card() {
   return 1
 }
 
-# leg NAME VARIABLE=VALUE...: tests/desktop.sh with these variables.
+# leg NAME TEST VARIABLE=VALUE...: /repo/tests/TEST with these variables.
 leg() {
-  local name=$1
-  shift
+  local name=$1 test=$2
+  shift 2
   echo "=== $name"
-  env IMAGE="$image" "$@" /tests/desktop.sh
+  env IMAGE="$image" "$@" "/repo/tests/$test"
 }
+
+legs=" $(cat /vm/legs) "
 
 echo "guest: $(uname -r), $(nproc) CPUs, $(free -g | awk '/^Mem:/ { print $2 }') GiB"
 
@@ -54,14 +60,21 @@ for sys in /sys/class/drm/card*; do
   echo "$sys: $(readlink -f "$sys/device") $(basename "$(readlink -f "$sys/device/driver")")"
 done
 gpu=$(card bochs-drm)
-leg "bochs-display, no DRM master: refused" OMANYWHERE_TEST_DEVICES="--device $gpu" \
-  OMANYWHERE_TEST_EXPECT_SKIP="no display server holds DRM master on $gpu; refusing to take it"
-leg "bochs-display, no DRM master, OMANYWHERE_DRM_MASTER=allow" \
-  OMANYWHERE_TEST_DEVICES="--device $gpu -e OMANYWHERE_DRM_MASTER=allow"
+if [[ $legs == *" desktop "* ]]; then
+  leg "bochs-display, no DRM master: refused" desktop.sh OMANYWHERE_TEST_DEVICES="--device $gpu" \
+    OMANYWHERE_TEST_EXPECT_SKIP="no display server holds DRM master on $gpu; refusing to take it"
+  leg "bochs-display, no DRM master, OMANYWHERE_DRM_MASTER=allow" desktop.sh \
+    OMANYWHERE_TEST_DEVICES="--device $gpu -e OMANYWHERE_DRM_MASTER=allow"
+fi
 
 # Unbind the GPU (in the guest's kernel), so only vkms has connectors.
 device=$(readlink -f "/sys/class/drm/${gpu#/dev/dri/}/device")
 basename "$device" >"$(readlink -f "$device/driver")/unbind"
 modprobe vkms
 ls -l /dev/dri
-leg "vkms, the CPU-only leg" OMANYWHERE_TEST_DEVICES="--device $(card vkms)"
+if [[ $legs == *" desktop "* ]]; then
+  leg "vkms, the CPU-only leg" desktop.sh OMANYWHERE_TEST_DEVICES="--device $(card vkms)"
+fi
+if [[ $legs == *" gliff "* ]]; then
+  leg "gliff on vkms, the CPU-only leg" gliff.sh OMANYWHERE_TEST_GPU=auto OMANYWHERE_TEST_EXPECT_VIDEO=cpu
+fi

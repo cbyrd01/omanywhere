@@ -1,13 +1,15 @@
 #!/bin/bash
-# Runs tests/desktop.sh's guest legs (tests/vm/guest) in a KVM guest: a GPU
-# no display server is master of (QEMU's bochs-display), refused and then
-# allowed, and the CPU-only leg on vkms, which the guest loads in its own
-# kernel. The image under test runs in the guest's own Docker, so the host's
-# display is never touched. QEMU runs in a container with only /dev/kvm, as
-# the calling user.
+# Runs the guest legs (tests/vm/guest) in a KVM guest: tests/desktop.sh on a
+# GPU no display server is master of (QEMU's bochs-display), refused and then
+# allowed, and on vkms, which the guest loads in its own kernel (the CPU-only
+# leg); and tests/gliff.sh on vkms. The image under test runs in the guest's
+# own Docker, so the host's display is never touched. QEMU runs in a container
+# with only /dev/kvm, as the calling user.
 #
 # Usage: tests/vm/run (IMAGE defaults to omanywhere:dev; BASE_IMAGE is
 # image/Containerfile's verified base, which `make test-desktop-vm` passes).
+# OMANYWHERE_VM_LEGS picks the legs: desktop, gliff or both (the default).
+# The repository is shared with the guest read-only, at /repo.
 # The guest's disk, kernel and a saved copy of the image go to
 # OMANYWHERE_VM_DIR (default ~/.cache/omanywhere-test-vm), about 30 GB, kept
 # for the next run; delete the directory to free the space.
@@ -79,13 +81,14 @@ if [[ ! -f $dir/$tar ]]; then
 fi
 echo "$key" >"$dir/image.key"
 echo "$IMAGE" >"$dir/image.name"
+echo "${OMANYWHERE_VM_LEGS:-desktop gliff}" >"$dir/legs"
 rm -rf "$dir/out"
 mkdir "$dir/out"
 
 echo "booting the guest (console: $dir/console.log)"
 docker run --rm --name "$name" --network none --user "$(id -u):$(id -g)" \
   --group-add "$(stat -c %g /dev/kvm)" --device /dev/kvm \
-  -v "$dir:/vm" -v "$here/..:/tests:ro" "$vm_image" \
+  -v "$dir:/vm" -v "$here/../..:/repo:ro" "$vm_image" \
   timeout 1800 qemu-system-x86_64 -enable-kvm -cpu host -m 8192 -smp 8 \
   -nodefaults -vga none -display none -nic none -no-reboot \
   -serial file:/vm/console.log \
@@ -93,10 +96,10 @@ docker run --rm --name "$name" --network none --user "$(id -u):$(id -g)" \
   -append 'root=/dev/vda rw console=ttyS0' \
   -drive "file=/vm/$root,format=raw,if=virtio" \
   -device bochs-display \
-  -virtfs local,path=/tests,mount_tag=tests,security_model=none,readonly=on \
+  -virtfs local,path=/repo,mount_tag=repo,security_model=none,readonly=on \
   -virtfs local,path=/vm,mount_tag=vm,security_model=none
 
 cat "$dir/out/guest.log" 2>/dev/null || fail "the guest wrote no log (console: $dir/console.log)"
 status=$(cat "$dir/out/status" 2>/dev/null) || fail "the guest did not finish the test"
-((status == 0)) || fail "the desktop test failed in the guest (exit $status)"
-echo "vm desktop tests passed"
+((status == 0)) || fail "a test failed in the guest (exit $status)"
+echo "vm tests passed ($(cat "$dir/legs"))"

@@ -30,7 +30,7 @@ RUN kver=$(basename /usr/lib/modules/*) && \
     cp "/usr/lib/modules/$kver/vmlinuz" /boot/vmlinuz-vm
 
 # The guest boots systemd and runs tests/vm/guest from the read-only share
-# "tests", writing to the share "vm"; then it powers off. systemd-firstboot
+# "repo", writing to the share "vm"; then it powers off. systemd-firstboot
 # would stop the boot to ask for a timezone on the serial console.
 COPY modules-load.conf /etc/modules-load.d/omanywhere-vm.conf
 COPY fstab /etc/fstab

@@ -6,22 +6,12 @@
 
 IMAGE=${IMAGE:-omanywhere:dev}
 
-# How systemd runs as PID 1 under Docker 29 with no privilege: a private cgroup
-# namespace made writable (only the container's own subtree), and tmpfs where
-# systemd expects one. The image sets container=docker and STOPSIGNAL itself.
-# --tty gives systemd a console (/dev/console), as systemd's container
-# interface asks: without one, systemd sends its own output and the units'
-# console output to /dev/null, and docker logs is empty. With it, docker logs
-# shows the boot and the desktop session's skip or refusal messages (and the
-# stock console getty's login prompt, which Task 5 deals with).
-RUN_FLAGS=(
-  --tty
-  --cgroupns=private
-  --security-opt writable-cgroups=true
-  --tmpfs /run
-  --tmpfs /run/lock
-  --tmpfs /tmp
-)
+# The run flags: lib/run-flags.bash, which bin/omanywhere uses too, so the
+# tests run containers as the CLI does (docs/usage.md, "The run flags", says
+# why each is there).
+# shellcheck source=lib/run-flags.bash
+source "$(dirname "${BASH_SOURCE[0]}")/../lib/run-flags.bash"
+RUN_FLAGS=("${run_flags[@]}")
 
 fail() {
   echo "FAIL: $*" >&2
@@ -30,6 +20,11 @@ fail() {
 
 pass() {
   echo "ok: $*"
+}
+
+# indent: copy standard input to standard output, each line set off with "  | ".
+indent() {
+  sed 's/^/  | /'
 }
 
 check_name() {
@@ -63,6 +58,8 @@ test_key() {
 
 # wait_running NAME TIMEOUT: wait until systemd has finished booting and print
 # the state it reports then. Succeeds when that is running or degraded.
+# bin/omanywhere has its own (wait_booted, wait_settled): it doesn't source
+# the tests' helpers.
 wait_running() {
   local name=$1 timeout=$2 state
   # --wait blocks until the boot transaction is done, but needs systemd's bus,

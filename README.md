@@ -8,7 +8,20 @@ An unofficial community project, not affiliated with Omacom or Omarchy.
 
 ## Status
 
-Not started. The research and the approach are in `notes/` (local, not committed).
+Version 0, in progress. It has the image, the owner account and ssh, the desktop session, and
+the `omanywhere` command. The research behind it is in `notes/` (local, not committed).
+
+## Use
+
+```sh
+make image                     # build omanywhere:dev
+bin/omanywhere up desk         # a container, omanywhere-desk, with your ssh agent's keys
+bin/omanywhere ssh-config desk >>~/.ssh/config
+gliff --headless omanywhere-desk
+```
+
+[docs/usage.md](docs/usage.md) covers the rest: the commands and their flags, GPU and CPU-only
+hosts, DRM master, gliff, and troubleshooting.
 
 ## Uses
 
@@ -32,29 +45,71 @@ Not started. The research and the approach are in `notes/` (local, not committed
 5. **Fix things upstream first.** If Omarchy, Hyprland or gliff needs a change, propose it there
    before adding a workaround here. Write the reason next to any workaround.
 
-## How it should work
+## How it works
 
 - `omanywhere-session.service` starts Omarchy's Hyprland for the owner under uwsm, in a logind
-  session, in place of sddm. Hyprland needs a DRM card node: aquamarine allocates its buffers
-  through one even with no screen, and nothing reads `AQ_NO_KMS_REQUIREMENT`. With a GPU's card
-  (`--device nvidia.com/gpu=all`, or `/dev/dri`) every connector, the host's displays, is turned
-  off, now and whenever one appears, and Hyprland creates its own headless output. Without a
-  usable card the session is skipped, and the journal and `docker logs` (the container runs
-  with `--tty`, so systemd has a console) say why. The console's login prompt (getty) lands
-  in `docker logs` too, for now.
-- The session refuses a GPU that no display server is DRM master of: Hyprland would take
-  master and turn the host's outputs off. On a host with no display of its own, set
-  `OMANYWHERE_DRM_MASTER=allow` (see `package/omanywhere/session`). The session checks again
-  just before it starts Hyprland, but master can still change hands in the second between
-  that check and Hyprland opening the card; that window can't be closed while Hyprland opens
-  the card itself, and the real fix is upstream (a headless compositor that needs no card).
+  session, in place of sddm.
+- Hyprland needs a DRM card node, because aquamarine allocates its buffers through one even
+  with no screen. Nothing reads `AQ_NO_KMS_REQUIREMENT`.
+- On a GPU's card (`--device nvidia.com/gpu=all`, or `/dev/dri`), the connectors are the
+  host's displays. The session turns every one of them off, at start and whenever one
+  appears, and Hyprland draws on a headless output of its own.
+- CPU-only hosts need a `vkms` card that the host loads. Its connector is the desktop's
+  monitor.
+- Without a usable card, the session is skipped. The journal and `docker logs` say why.
+- The session refuses a GPU that no display server is DRM master of, because Hyprland would
+  take master and turn the host's outputs off. On a host with no display of its own, set
+  `OMANYWHERE_DRM_MASTER=allow`.
+  - The session checks master again just before it starts Hyprland. Master can still change
+    hands in the second between that check and Hyprland opening the card. That window can't
+    be closed while Hyprland opens the card itself.
+  - The real fix is upstream: a headless compositor that needs no card.
 - A refused or skipped desktop stays down until the container restarts.
-- gliff-server (already in Omarchy's base packages) captures that output and injects input
-  through Wayland, so the container needs no `uinput`, input devices or seat.
-- Access is ssh only (`ssh host gliff-server --stdio`), with keys only and no published ports.
-  [Glifftop](https://github.com/cbyrd01/glifftop) or any other gliff client connects.
-- CPU-only hosts still need some DRM device today: a `vkms` card the host loads, whose
-  connector is then the desktop's monitor. See `notes/`.
+- gliff-server, already in Omarchy's base packages, captures the desktop and injects input
+  through Wayland. The container needs no `uinput`, input devices or seat.
+- Access is ssh only (`ssh host gliff-server --stdio`), with keys only. The session sets
+  `GLIFF_VIDEO` and `GLIFF_CAPTURE` for the card it chose, through sshd, so a plain gliff
+  client needs no flags.
+- [Glifftop](https://github.com/cbyrd01/glifftop) or any other gliff client connects.
+
+## The container's interface
+
+`bin/omanywhere` runs the container much like this. To run it some other way, such as from
+Compose, use the same flags:
+
+```sh
+docker run -d --tty --cgroupns=private --security-opt writable-cgroups=true \
+  --tmpfs /run --tmpfs /run/lock --tmpfs /tmp --tmpfs /run/secrets:mode=0700 \
+  -v NAME-home:/home -v NAME-state:/var/lib/omanywhere \
+  -v ./authorized_keys:/run/secrets/authorized_keys:ro -v ./password:/run/secrets/password:ro \
+  -p 127.0.0.1:2222:22 [--device nvidia.com/gpu=all | --device /dev/dri] omanywhere:dev
+```
+
+[docs/usage.md](docs/usage.md#the-run-flags) explains each flag. There is no `--privileged`,
+no `--cap-add`, and no host network or cgroups.
+
+The `omanywhere` package (`package/omanywhere/`) makes the owner account at boot from these
+inputs:
+
+- `OMANYWHERE_USER`, `OMANYWHERE_UID`, `TZ` and `OMANYWHERE_DRM_MASTER`;
+- `OMANYWHERE_AUTHORIZED_KEYS`, or the file `/run/secrets/authorized_keys`;
+- `OMANYWHERE_PASSWORD`, or the file `/run/secrets/password`.
+
+Give them with `docker run -e`, or as files under `/run/secrets/` (see
+`package/omanywhere/owner`).
+
+The keys given to the container are authoritative, and are set again on every boot. sshd
+reads them from `/run/omanywhere/authorized_keys/`. Keys that the owner adds to
+`~/.ssh/authorized_keys` themselves are kept.
+
+State lives in two named volumes:
+
+- `/home`;
+- `/var/lib/omanywhere`, which holds the machine-id and the ssh host key.
+
+Use named volumes, which Docker fills from the image. A bind-mounted state directory starts
+empty, so its first boot can't keep a machine-id and is degraded. From the second boot on it
+behaves like a named volume.
 
 ## Development
 
@@ -67,25 +122,20 @@ make image   # cosign-verify the Arch base, then build omanywhere:dev (image/Con
 make test-boot    # boot the image under systemd with no privilege and check it (tests/boot.sh)
 make test-owner   # the owner account, ssh, and recreating over the same volumes (tests/owner.sh)
 make test-session-logic # the session's card, DRM master and monitor-rule decisions, no device
-make test         # these three; the no-card desktop case is in tests/boot.sh
+make test-cli     # bin/omanywhere up, status, ssh-config and down, no device (tests/cli.sh)
+make test         # these four; the no-card desktop case is in tests/boot.sh
 make test-desktop # the desktop session on a card (tests/desktop.sh): set
                   # OMANYWHERE_TEST_DEVICES, such as --device nvidia.com/gpu=all
 make test-desktop-vm # the desktop in a KVM guest, never touching the host's display: a GPU
                      # nobody is master of (refused, then allowed), and a vkms card loaded in
                      # the guest's kernel (tests/vm/run; needs /dev/kvm and ~30 GB)
+make test-gliff   # a plain gliff client over ssh (tests/gliff.sh): set
+                  # OMANYWHERE_TEST_GPU, up's --gpu, such as auto on an NVIDIA CDI host
+make test-gliff-vm # tests/gliff.sh in the KVM guest on vkms: the CPU-only leg
 ```
 
 The image adds one package of its own, `omanywhere` (`package/omanywhere/`), built in the
-image's `package` stage. It makes the owner account at boot from `OMANYWHERE_USER`,
-`OMANYWHERE_UID`, `OMANYWHERE_AUTHORIZED_KEYS`, `OMANYWHERE_PASSWORD`, `TZ` and
-`OMANYWHERE_DRM_MASTER`, given with
-`docker run -e` or as files under `/run/secrets/` (see `package/omanywhere/owner`).
-The keys given to the container are authoritative and set again on every boot (sshd reads them
-from `/run/omanywhere/authorized_keys/`); keys the owner adds to `~/.ssh/authorized_keys`
-themselves are kept. State lives in two named volumes, `/home` and `/var/lib/omanywhere` (the
-machine-id and the ssh host key); use named volumes, which Docker fills from the image. A
-bind-mounted state directory starts empty, so its first boot can't keep a machine-id and is
-degraded; from the second boot on it behaves like a named volume.
+image's `package` stage.
 
 The tools (cosign, gitleaks, shellcheck) come from Arch Linux's signed repositories,
 installed in a small image built from `tools/Containerfile`.

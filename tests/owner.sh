@@ -115,9 +115,12 @@ cexec "$first" test -f "$hook" || fail "the owner unit did not install $hook"
 cexec "$first" cp /usr/share/omarchy/default/pacman/pacman-stable.conf /etc/pacman.conf
 cexec "$first" pacman -Sy --noconfirm >/dev/null 2>&1 &&
   fail "pacman -Sy worked without DisableSandboxFilesystem: is the line still needed?"
+# /run/secrets is root's alone, so the test hands the owner a copy for this.
+cexec "$first" install -m 0400 -o "$user" /run/secrets/password /tmp/test-password
 out=$(cexec "$first" runuser -u "$user" -- script -qec \
-  'sudo -S -p "" -v </run/secrets/password && omarchy-hook pre-refresh-pacman' /dev/null 2>&1) ||
+  'sudo -S -p "" -v </tmp/test-password && omarchy-hook pre-refresh-pacman' /dev/null 2>&1) ||
   fail "omarchy-hook pre-refresh-pacman failed: $out"
+cexec "$first" rm -f /tmp/test-password
 [[ $out != *"Hook failed"* ]] || fail "the pacman hook failed: $out"
 out=$(cexec "$first" pacman -Sy --noconfirm 2>&1) || fail "pacman -Sy failed after the hook: $out"
 pass "after Omarchy's pacman.conf is restored, the owner's hook makes pacman -Sy work again"
