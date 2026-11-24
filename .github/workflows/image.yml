@@ -1,0 +1,56 @@
+name: Image
+
+on:
+  pull_request:
+    paths: &paths
+      - image/**
+      - package/**
+      - lib/**
+      - bin/**
+      - tests/**
+      - scripts/**
+      - tools/**
+      - Makefile
+      - .dockerignore
+      - .github/workflows/image.yml
+  push:
+    branches: [main]
+    paths: *paths
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    # Not ubuntu-latest (24.04, Docker 28.0.4): the run flags use
+    # --security-opt writable-cgroups=true, which needs Docker 29.
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Runner resources
+        run: |
+          df -h / /mnt
+          nproc
+          free -h
+          docker info
+          sudo aa-status 2>&1 | head -5 || true
+      - name: Verify the Arch base image
+        run: make verify-base
+      - name: Build the image
+        run: make image
+      - name: Tests
+        run: make test-session-logic test-boot test-owner
+      - name: Disk after the build
+        if: always()
+        run: df -h / /mnt
+      - name: Kernel denials
+        if: failure()
+        run: sudo dmesg | grep -i -E 'apparmor|denied' | tail -50 || true
