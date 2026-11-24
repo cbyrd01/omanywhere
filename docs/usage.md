@@ -50,6 +50,11 @@ NAME is 1 to 32 lower-case letters, digits and inner hyphens. From it come these
 
 `OMANYWHERE_IMAGE` picks the image. The default is `omanywhere:dev`. `up` never pulls an image.
 
+Of the container, only the two volumes outlive `down`. Anything installed in its root, such as
+packages, is gone, and the next `up` makes the container afresh from the image. That is how to
+move to a new image: build it (or set `OMANYWHERE_IMAGE`), then run `down NAME` and `up NAME`.
+A container that exists keeps the image it was made from, because `up` only starts it.
+
 ### `up` options
 
 These options apply when the container is made. `up` saves them in the config directory, so a
@@ -78,7 +83,9 @@ On the first `up`, the config directory gets these files:
   read-only at `/run/secrets/password`, which only root in the container can read. It never
   appears in a command line or in the container's environment. Read it with
   `cat ~/.config/omanywhere/NAME/password`.
-- `authorized_keys`, mounted read-only at `/run/secrets/authorized_keys`.
+- `authorized_keys`, mounted read-only at `/run/secrets/authorized_keys`. Each line is a public
+  key, and may start with authorized_keys options such as `from="…"`, which sshd applies. A
+  `command="…"` would run instead of gliff-server, so gliff can't use that key.
 - `settings`: the listen address, the port, `--gpu` and `--drm-master`.
 
 On the first `up`, Docker picks a free port for ssh, and `up` keeps it after that, so the
@@ -253,14 +260,23 @@ On a host with no display of its own, such as a server GPU, allow it with
 `up NAME --drm-master allow` (the container gets `OMANYWHERE_DRM_MASTER=allow`). vkms cards
 are exempt, because their connectors belong to the container.
 
+The guard covers only Hyprland's start. The owner is in the card's group, so any process in
+the container can open the card. While no host display server holds master (at a text
+console, logged out, or before the display manager starts), that process becomes master and
+locks the host's display out until it exits. Don't run untrusted code in a container on a GPU
+that a host display shares. The real fix is upstream: a compositor that needs no card
+(aquamarine's headless backend without KMS).
+
 ## Troubleshooting
 
 Start with `omanywhere status NAME`.
 
-- **`desktop skipped: no DRM card ...`.** The container has no card. Use `--gpu nvidia` or
-  `--gpu dri`, or load vkms on a CPU-only host, then `down` and `up`.
+- **`desktop skipped: no DRM card ...`** or **`no usable DRM card ...`.** The container has no
+  card the desktop can use, and its devices are fixed when it's made. Load vkms on a CPU-only
+  host if it needs one, then `down NAME` and `up NAME --gpu ...` (see
+  [CPU and GPU hosts](#cpu-and-gpu-hosts)).
 - **`desktop skipped: no display server holds DRM master ...`.** See [DRM master](#drm-master).
-  On a desktop host, log in to the host's desktop, then `down` and `up`.
+  On a desktop host, log in to the host's desktop, then `docker restart omanywhere-NAME`.
 - **`owner failed`.** Run `docker exec omanywhere-NAME journalctl -b -u omanywhere-owner`.
   Usually a key line isn't a key.
 - **The desktop restarts, or is `failed`.** Run `docker exec omanywhere-NAME journalctl -b -u
