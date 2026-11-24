@@ -22,7 +22,8 @@
 #   - virtual: vkms, whose connectors belong to the container. They stay on and
 #     are the desktop's monitors.
 #   - ignored: firmware framebuffers (simpledrm and the like), other faux
-#     devices, and any card without KMS (nvidia with nvidia_drm modeset=N).
+#     devices, any card without KMS (nvidia with nvidia_drm modeset=N), and
+#     an NVIDIA card without NVIDIA's GBM backend (see classify).
 #   - GPU: any other card with KMS. Its connectors are the host's displays:
 #     every one is turned off, at start and whenever one appears, so the
 #     container never lights a host display, and a headless output is the
@@ -51,14 +52,16 @@
 set -euo pipefail
 
 # Where the choice, the monitor rules, sshd's gliff environment, the cards'
-# connectors, the render nodes and the nvidia_drm modeset flag live (plain
-# variables, so tests/session-logic.sh can point them at a made-up tree).
+# connectors, the render nodes, the nvidia_drm modeset flag and NVIDIA's GBM
+# backend live (plain variables, so tests/session-logic.sh can point them at
+# a made-up tree).
 env_file=/run/omanywhere/session.env
 rules=/run/omanywhere/hypr/container.lua
 sshd_env=/run/omanywhere/sshd/gliff.conf
 dri_dir=/dev/dri
 drm_class=/sys/class/drm
 nvidia_modeset=/sys/module/nvidia_drm/parameters/modeset
+nvidia_gbm=/usr/lib/gbm/nvidia-drm_gbm.so
 
 say() {
   echo "omanywhere-session: $*" >&2
@@ -104,16 +107,30 @@ classify() {
   esac
   if [[ $bus == faux ]]; then
     echo "ignored $driver a faux device without connectors"
-  elif [[ -n $(connectors "$1") ]]; then
-    echo "gpu $driver"
-  elif [[ $driver == nvidia && $(cat "$nvidia_modeset" 2>/dev/null) == Y ]]; then
-    # A GPU with no display outputs (a data-centre card) still has KMS.
-    echo "gpu $driver"
-  elif [[ $driver == nvidia ]]; then
-    echo "ignored $driver no KMS: the host loads nvidia_drm with modeset=N"
-  else
-    echo "ignored $driver no KMS: the card has no connectors"
+    return
   fi
+  # A GPU with no display outputs (a data-centre card) still has KMS.
+  if [[ -z $(connectors "$1") ]]; then
+    if [[ $driver != nvidia ]]; then
+      echo "ignored $driver no KMS: the card has no connectors"
+      return
+    elif [[ $(cat "$nvidia_modeset" 2>/dev/null) != Y ]]; then
+      echo "ignored $driver no KMS: the host loads nvidia_drm with modeset=N"
+      return
+    fi
+  fi
+  # aquamarine allocates through GBM, and NVIDIA's GBM backend isn't in the
+  # image: it comes from the host's driver, through NVIDIA's CDI spec, whose
+  # hook links it here. A card passed as plain /dev/dri lacks it, and
+  # Hyprland would fail to start, again and again. On Debian and Ubuntu the
+  # spec mounts it under /usr/lib/x86_64-linux-gnu/gbm, where Arch's Mesa
+  # doesn't look; linking it here would need code of ours that knows CDI's
+  # layout per distribution, so that isn't supported yet.
+  if [[ $driver == nvidia && ! -e $nvidia_gbm ]]; then
+    echo "ignored $driver no GBM backend ($nvidia_gbm), which only NVIDIA's CDI spec adds: use --gpu nvidia (--device nvidia.com/gpu=all, from nvidia-container-toolkit); a Debian or Ubuntu host's spec puts it elsewhere and isn't supported yet"
+    return
+  fi
+  echo "gpu $driver"
 }
 
 # probe_master NODE: print "free" if no one is DRM master of the card, "held"

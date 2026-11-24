@@ -215,7 +215,11 @@ even when no screen is attached. `--gpu` chooses the card:
 
   `nvidia-cdi-refresh` writes the spec to `/var/run/cdi`. The package's `.path` unit and boot
   re-run it when the driver changes.
-- `dri` uses `--device /dev/dri`, which covers AMD and Intel GPUs and a host vkms card.
+- `dri` uses `--device /dev/dri`, which covers AMD and Intel GPUs and a host vkms card. It
+  doesn't cover NVIDIA: Hyprland allocates through GBM, and NVIDIA's GBM backend comes only with
+  its CDI spec, so the session skips an NVIDIA card given this way, and `up` warns. A Debian or
+  Ubuntu host's CDI spec puts the backend where Arch's Mesa doesn't look, so it isn't supported
+  yet.
 - `none` uses no device. You get ssh and no desktop.
 
 **GPU host.** The desktop runs on the GPU's card, but none of the GPU's connectors belong to
