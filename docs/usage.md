@@ -58,7 +58,7 @@ container, run `down NAME` and then `up NAME --option`.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--gpu auto\|none\|nvidia\|dri` | `auto` | The DRM card the desktop runs on (see [CPU and GPU hosts](#cpu-and-gpu-hosts)). |
+| `--gpu auto\|none\|nvidia\|dri\|dri:/dev/dri/cardN` | `auto` | The DRM card the desktop runs on (see [CPU and GPU hosts](#cpu-and-gpu-hosts)). |
 | `--key FILE` | your ssh agent's keys | The public keys that may log in. `up` copies them to the config directory. |
 | `--listen ADDR` | `127.0.0.1` | The address ssh is published on, such as a tailnet address. |
 | `--drm-master allow` | off | Lets the desktop take DRM master of a GPU that no display server holds (see [DRM master](#drm-master)). |
@@ -220,6 +220,9 @@ even when no screen is attached. `--gpu` chooses the card:
   its CDI spec, so the session skips an NVIDIA card given this way, and `up` warns. A Debian or
   Ubuntu host's CDI spec puts the backend where Arch's Mesa doesn't look, so it isn't supported
   yet.
+- `dri:/dev/dri/cardN` passes that one card, and its own render node if it has one (`up` finds
+  it in the host's `/sys/class/drm/cardN/device/drm/`). `up` checks that the card exists when
+  it makes the container.
 - `none` uses no device. You get ssh and no desktop.
 
 **GPU host.** The desktop runs on the GPU's card, but none of the GPU's connectors belong to
@@ -227,10 +230,12 @@ the container. They are the host's displays, so the session turns every one of t
 draws on a headless output instead. Rendering and encoding run on the GPU.
 
 **CPU-only host.** The host must provide a virtual card: `modprobe vkms`, kept across boots
-with a file in `/etc/modules-load.d/`. Each container needs a card of its own, because a card
-has only one DRM master. vkms's connector is the desktop's monitor. Hyprland renders with
-llvmpipe and gliff encodes with OpenH264, which costs about 2.5 to 3.5 cores for an active
-1080p session and almost nothing when the screen is still. Don't load vkms on a machine
+with a file in `/etc/modules-load.d/`. vkms's connector is the desktop's monitor. Each
+container needs a vkms card of its own, because a card has only one DRM master (vkms's configfs
+makes more than one). Give each container its card with `--gpu dri:/dev/dri/cardN`, since
+`--gpu dri` passes every card. Hyprland renders with llvmpipe and gliff encodes with OpenH264,
+which costs about 2.5 to 3.5 cores for an active 1080p session and almost nothing when the
+screen is still. Don't load vkms on a machine
 whose own desktop you are using. It adds a monitor to that desktop.
 
 ## DRM master

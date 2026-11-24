@@ -2,8 +2,8 @@
 # omanywhere: run stock Omarchy as a container desktop, reached with gliff over
 # ssh. See docs/usage.md.
 #
-#   omanywhere up NAME [--gpu auto|none|nvidia|dri] [--key FILE] [--listen ADDR]
-#                      [--drm-master allow]
+#   omanywhere up NAME [--gpu auto|none|nvidia|dri|dri:/dev/dri/cardN]
+#                      [--key FILE] [--listen ADDR] [--drm-master allow]
 #   omanywhere down NAME [--purge [--yes]]
 #   omanywhere ssh-config NAME
 #   omanywhere status NAME
@@ -19,6 +19,10 @@ image=${OMANYWHERE_IMAGE:-omanywhere:dev}
 config_root=${OMANYWHERE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/omanywhere}
 # The owner account's default name (OMANYWHERE_USER in the container).
 user=omarchy
+# The host's DRM nodes and their sysfs (plain variables, so tests/cli.sh can
+# point them at a made-up tree).
+dev_dri=/dev/dri
+drm_class=/sys/class/drm
 
 # The run flags, shared with the tests; docs/usage.md ("The run flags") says
 # what each is for. Found beside this script, through any symlink to it.
@@ -27,7 +31,8 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/run-flags.bash"
 
 usage() {
   cat >&2 <<'EOF'
-usage: omanywhere up NAME [--gpu auto|none|nvidia|dri] [--key FILE] [--listen ADDR] [--drm-master allow]
+usage: omanywhere up NAME [--gpu auto|none|nvidia|dri|dri:/dev/dri/cardN] [--key FILE] [--listen ADDR]
+                     [--drm-master allow]
        omanywhere down NAME [--purge [--yes]]
        omanywhere ssh-config NAME
        omanywhere status NAME
@@ -68,7 +73,10 @@ listen='' port='' gpu='' drm_master=''
 # settings file are checked alike.
 check() {
   case $1 in
-    gpu) [[ $2 =~ ^(auto|none|nvidia|dri)$ ]] || die "$3 '$2': takes auto, none, nvidia or dri" ;;
+    # That the card exists is checked when the container is made (gpu_args),
+    # so status and ssh-config still work once it has gone.
+    gpu) [[ $2 =~ ^(auto|none|nvidia|dri|dri:/dev/dri/card[0-9]+)$ ]] ||
+      die "$3 '$2': takes auto, none, nvidia, dri or dri:/dev/dri/cardN" ;;
     # An IPv4 or IPv6 address, as docker run -p takes it.
     listen) [[ $2 =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ || ($2 =~ ^[0-9A-Fa-f:.]+$ && $2 == *:*) ]] ||
       die "$3 '$2': takes an IPv4 or IPv6 address, such as 127.0.0.1 or a tailnet address" ;;
@@ -120,11 +128,40 @@ cdi_gpu() {
     grep -qx 'nvidia.com/gpu=all'
 }
 
+# card_render CARD: the host's render node (/dev/dri/renderDN) on the same
+# device as the DRM card CARD (cardN), from sysfs; nothing if it has none
+# (vkms).
+card_render() {
+  local sys
+  for sys in "$drm_class/$1/device/drm/renderD"*; do
+    [[ -e $sys && -c $dev_dri/${sys##*/} ]] || continue
+    echo "/dev/dri/${sys##*/}"
+    return
+  done
+}
+
+# warn_nvidia CARD...: one warning if any of the host's cards (cardN) is
+# NVIDIA's and Docker has no NVIDIA CDI device. The desktop session can't use
+# such a card: NVIDIA's GBM backend, which Hyprland allocates through, comes
+# only with the CDI spec (see classify in /usr/lib/omanywhere/session).
+warn_nvidia() {
+  local card driver nvidia=()
+  for card; do
+    driver=$(readlink -f "$drm_class/$card/device/driver" 2>/dev/null) || driver=
+    [[ ${driver##*/} != nvidia ]] || nvidia+=("/dev/dri/$card")
+  done
+  ((${#nvidia[@]})) && ! cdi_gpu || return 0
+  say "warning: ${nvidia[*]} is an NVIDIA card, and Docker has no NVIDIA CDI device (nvidia.com/gpu=all): the desktop can't use it, as NVIDIA's GBM backend comes only through CDI. Install nvidia-container-toolkit and use --gpu nvidia (see docs/usage.md)"
+}
+
 # gpu_args MODE: set devices (docker run arguments) and gpu_note for --gpu MODE.
 gpu_args() {
-  local cards
+  local node card render cards=()
   devices=()
-  cards=$(compgen -G '/dev/dri/card*' || true)
+  for node in "$dev_dri"/card*; do
+    [[ -c $node ]] || continue
+    cards+=("${node##*/}")
+  done
   case $1 in
     none) gpu_note="no device: the desktop will be skipped (it needs a DRM card)" ;;
     nvidia)
@@ -133,14 +170,25 @@ gpu_args() {
       gpu_note="NVIDIA GPU through CDI (nvidia.com/gpu=all)"
       ;;
     dri)
-      [[ -n $cards ]] || die "--gpu dri: this host has no /dev/dri/card*"
+      ((${#cards[@]})) || die "--gpu dri: this host has no /dev/dri/card*"
+      warn_nvidia "${cards[@]}"
       devices=(--device /dev/dri)
-      gpu_note="/dev/dri ($(echo "$cards" | paste -sd ' '))"
+      gpu_note="/dev/dri (${cards[*]})"
+      ;;
+    # One card, and its own render node: each container on a CPU-only host
+    # needs a vkms card of its own (a card has one DRM master).
+    dri:*)
+      card=${1#dri:/dev/dri/}
+      [[ -c $dev_dri/$card ]] || die "--gpu $1: this host has no character device /dev/dri/$card"
+      warn_nvidia "$card"
+      render=$(card_render "$card")
+      devices=(--device "/dev/dri/$card" ${render:+--device "$render"})
+      gpu_note="/dev/dri/$card${render:+ and its render node $render}"
       ;;
     auto)
       if cdi_gpu; then
         gpu_args nvidia
-      elif [[ -n $cards ]]; then
+      elif ((${#cards[@]})); then
         gpu_args dri
       else
         devices=()
@@ -495,7 +543,10 @@ cmd_status() {
   [[ $(container_state) != absent ]]
 }
 
-[[ ${1:-} =~ ^(up|down|ssh-config|status)$ ]] || usage
-cmd=cmd_${1//-/_}
-shift
-"$cmd" "$@"
+# Sourced (by tests/cli.sh), it only defines the functions.
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+  [[ ${1:-} =~ ^(up|down|ssh-config|status)$ ]] || usage
+  cmd=cmd_${1//-/_}
+  shift
+  "$cmd" "$@"
+fi
