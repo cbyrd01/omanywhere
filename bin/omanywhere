@@ -156,14 +156,17 @@ gpu_args() {
 # every start (seen with Docker 29: 32768, 32769, 32770 over two restarts),
 # and with no restart policy a container starts again after each reboot, so
 # ssh's address would keep changing.
+# The throwaway is named for this run alone, so one left by an interrupted
+# up can't get in the way, and holds no privilege (it only sleeps).
 pick_port() {
-  local probe=$container-port out
-  docker run -d --rm --pull never --name "$probe" -p "$1::22" --entrypoint sleep "$image" 60 >/dev/null ||
-    die "could not publish a port on $1"
-  out=$(docker port "$probe" 22/tcp | head -n 1) || true
+  local probe=$container-port-$$-$RANDOM out
+  out=$(docker run -d --rm --pull never --name "$probe" --cap-drop ALL --security-opt no-new-privileges \
+    -p "$1::22" --entrypoint sleep "$image" 60 2>&1) ||
+    die "could not have Docker pick a port on $1: $out"
+  out=$(docker port "$probe" 22/tcp 2>&1 | head -n 1) || true
   docker rm -f "$probe" >/dev/null 2>&1 || true
   port=${out##*:}
-  [[ -n $port ]] || die "Docker gave no port on $1"
+  [[ $port =~ ^[0-9]+$ ]] || die "Docker gave no port on $1: $out"
 }
 
 # --- Secrets. The password is made here and only ever written to a file:
@@ -358,19 +361,30 @@ cmd_up() {
     bind=$listen
     [[ $listen != *:* ]] || bind="[$listen]"
     # The first up picks the port; later ones keep it, so ssh's address
-    # stays the same, and fail rather than move it.
-    [[ -n $port ]] || pick_port "$bind"
-    out=$(docker run -d --pull never --name "$container" --hostname "$name" \
-      "${run_flags[@]}" "${devices[@]}" "${env[@]}" \
-      -p "$bind:$port:22" \
-      -v "$home_volume:/home" -v "$state_volume:/var/lib/omanywhere" \
-      -v "$config/authorized_keys:/run/secrets/authorized_keys:ro" \
-      -v "$config/password:/run/secrets/password:ro" \
-      "$image" 2>&1) || {
+    # stays the same, and fail rather than move it. A port picked just now
+    # can be taken before the container publishes it: then pick once more.
+    local picked='' try
+    for try in 1 2; do
+      [[ -n $port ]] || {
+        pick_port "$bind"
+        picked=1
+      }
+      out=$(docker run -d --pull never --name "$container" --hostname "$name" \
+        "${run_flags[@]}" "${devices[@]}" "${env[@]}" \
+        -p "$bind:$port:22" \
+        -v "$home_volume:/home" -v "$state_volume:/var/lib/omanywhere" \
+        -v "$config/authorized_keys:/run/secrets/authorized_keys:ro" \
+        -v "$config/password:/run/secrets/password:ro" \
+        "$image" 2>&1) && break
       docker rm -f "$container" >/dev/null 2>&1 || true
-      die "could not make $container with ssh on $(endpoint), the port kept from its first up: $out
+      if [[ -z $picked ]]; then
+        die "could not make $container with ssh on $(endpoint), the port kept from its first up: $out
 If another program has taken port $port, free it and run up again, or delete the port line in $settings to take a new one (the ssh-config changes then)."
-    }
+      fi
+      ((try == 1)) || die "could not make $container with ssh on $(endpoint): $out"
+      say "could not make $container on the port Docker just picked, $port; picking again"
+      port=
+    done
     save_settings
   fi
 
@@ -384,9 +398,10 @@ If another program has taken port $port, free it and run up again, or delete the
 
   # No owner or no sshd, no way in: fail loudly, with the unit's journal,
   # and leave the container stopped, not running unreachable.
+  # sshd may be reloading at that moment, which serves as well as active.
   local unit
   for unit in omanywhere-owner.service sshd.service; do
-    [[ $(unit_state "$unit") != "active "* ]] || continue
+    [[ $(unit_state "$unit") != "active "* && $(unit_state "$unit") != "reloading "* ]] || continue
     say "$unit is $(unit_state "$unit"), so there is no way in; its journal:"
     cexec journalctl -b -u "$unit" -o cat --no-pager -n 20 >&2 || true
     docker stop "$container" >/dev/null || true

@@ -36,7 +36,7 @@ config=$OMANYWHERE_CONFIG_DIR/$name
 # down --purge --yes is the cleanup; the helpers after it catch whatever it
 # leaves if the CLI itself is broken.
 trap '"$cli" down "$name" --purge --yes >/dev/null 2>&1 || true
-  cleanup "$container" "$container-holder" "$container-blocker"; remove_volumes "$home_volume" "$state_volume"; rm -rf "$tmp"' EXIT
+  cleanup "$container" "$container-holder" "$container-blocker" "$container-port"; remove_volumes "$home_volume" "$state_volume"; rm -rf "$tmp"' EXIT
 
 docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "image $IMAGE not found (run make image)"
 [[ -x $cli ]] || fail "$cli is missing or not executable"
@@ -85,11 +85,17 @@ pass "bad names, flags and no key are refused before anything is made"
 
 # --- A key line the owner unit rejects: up fails loudly, with the unit's own
 # words, and the container is left stopped, not running without a way in.
+# A port-picking container left by an interrupted earlier up (under the
+# name round 1 used) doesn't get in this up's way.
+stale=$container-port
+check_name "$stale"
+docker create --name "$stale" --entrypoint true "$IMAGE" >/dev/null
 printf 'ssh-ed25519 not-a-key\n' >"$tmp/bad.pub"
 out=$("$cli" up "$name" --gpu none --key "$tmp/bad.pub" 2>&1) && fail "up with a bad key succeeded: $out"
+cleanup "$stale"
 [[ $out == *"line 1 is not an ssh public key"* ]] || fail "up did not show the owner unit's journal: $out"
 [[ $(docker inspect -f '{{.State.Running}}' "$container") == false ]] || fail "the container still runs after the owner unit failed"
-pass "a rejected key: up failed with the owner unit's journal, and the container is stopped"
+pass "a rejected key: up failed with the owner unit's journal, and the container is stopped (a stale port-picking container didn't matter)"
 
 # up --key with a good key repairs it: the keys file is rewritten in place,
 # and the stopped container starts with it.

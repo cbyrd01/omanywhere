@@ -13,7 +13,8 @@
 #            /usr/share/omanywhere/hypr/hyprland.lua loads after the owner's
 #            config, and how gliff-server should capture and encode on it to
 #            /run/omanywhere/sshd/gliff.conf, which sshd includes (see
-#            gliff_env); then reloads sshd, if it runs, to read it.
+#            gliff_env); then restarts sshd, if it runs or is starting, to
+#            read it (see reload_sshd).
 #   start    ExecStart, as the owner, in the logind session PAM opened. Reads
 #            the choice and execs uwsm.
 #
@@ -196,20 +197,26 @@ render_node() {
 # memory (shm), which takes gliff's CPU pipeline (OpenH264); that's what the
 # CPU-only spike on vkms needed. sshd gives these to every ssh session, so a
 # plain `gliff --headless` client needs no flags.
-# reload_sshd: have a running sshd re-read its config, the gliff environment
-# included (SIGHUP; sessions already open are unaffected). An sshd that hasn't
-# started yet reads it when it starts, so nothing is started here; and
-# --no-block, so the session never waits on sshd.
-reload_sshd() {
-  systemctl --no-block try-reload-or-restart sshd.service
-}
-
 gliff_env() {
   if [[ $1 == gpu && -n $2 ]]; then
     echo "GLIFF_VIDEO=gpu GLIFF_CAPTURE=auto"
   else
     echo "GLIFF_VIDEO=cpu GLIFF_CAPTURE=shm"
   fi
+}
+
+# reload_sshd: have sshd read its config again, the gliff environment
+# included, if it has read it already. A restart, not a reload: sshd may
+# still be starting (activating) now, having read its config before the file
+# existed, and systemd drops a try-reload for a unit that isn't active yet,
+# but keeps a try-restart's job for an activating one (seen with systemd 262,
+# sshd held in start-post: try-reload-or-restart left the same sshd running,
+# try-restart started a new one). sshd's KillMode=process keeps the sessions
+# already open. A try-restart starts nothing: an sshd that hasn't started
+# reads the file when it does. --no-block, so the session never waits on
+# sshd.
+reload_sshd() {
+  systemctl --no-block try-restart sshd.service
 }
 
 check() {
@@ -272,7 +279,7 @@ prepare() {
 SetEnv $gliff
 EOF
   say "gliff over ssh: $gliff (render node: ${render:-none})"
-  reload_sshd || say "could not reload sshd; ssh sessions get the gliff environment once it restarts"
+  reload_sshd || say "could not restart sshd; ssh sessions get the gliff environment once it restarts"
   if [[ $OMANYWHERE_CARD_KIND == virtual ]]; then
     install -D -m 0644 /dev/stdin "$rules" <<EOF
 -- Written by /usr/lib/omanywhere/session for this boot's DRM card,

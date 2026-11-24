@@ -9,7 +9,8 @@
 #   3. `gliff-probe serve-test`, against a `gliff-server --listen ... --headless`
 #      the owner starts over ssh, decodes frames; both run in the container;
 #   4. ssh sessions get the gliff environment whichever of sshd and the
-#      desktop session starts first.
+#      desktop session starts first, and when sshd is still starting as the
+#      session writes it.
 # Every wait is bounded: by a count, by timeout, or by the process it waits
 # on still running.
 #
@@ -210,6 +211,35 @@ for ((i = 0; i < 20; i++)); do
   sleep 0.5
 done
 [[ $got == "$want" ]] || fail "sshd started before the session: the ssh session got '$got', not '$want', 10 s after the session started"
-pass "sshd started after the session and before it: ssh sessions get GLIFF_VIDEO and GLIFF_CAPTURE either way"
+# sshd still starting when the session's prepare runs: it has read its
+# config, without the file, but isn't active yet. A test-only drop-in holds
+# it there (ExecStartPost runs while the unit is still activating), so the
+# window is wide enough to hit for certain.
+dropin=/run/systemd/system/sshd.service.d/zz-omanywhere-test-activating.conf
+cexec "$container" systemctl stop omanywhere-session.service
+cexec "$container" rm -f /run/omanywhere/sshd/gliff.conf
+cexec "$container" mkdir -p "${dropin%/*}"
+printf '[Service]\nExecStartPost=/usr/bin/sleep 8\n' | docker exec -i "$container" tee "$dropin" >/dev/null
+cexec "$container" systemctl daemon-reload
+cexec "$container" systemctl --no-block restart sshd.service
+for ((i = 0; i < 40; i++)); do
+  sshd_state=$(cexec "$container" systemctl show -P ActiveState,SubState sshd.service | paste -sd/)
+  [[ $sshd_state == activating/start-post ]] && break
+  sleep 0.25
+done
+[[ $sshd_state == activating/start-post ]] || fail "sshd did not reach start-post with the test drop-in (it is $sshd_state)"
+cexec "$container" systemctl start omanywhere-session.service
+sshd_state=$(cexec "$container" systemctl show -P ActiveState sshd.service)
+[[ $sshd_state == activating ]] ||
+  fail "sshd was $sshd_state, not still activating, once the session's prepare had run: the case was not tested"
+cexec "$container" rm -f "$dropin"
+cexec "$container" systemctl daemon-reload
+for ((i = 0; i < 60; i++)); do
+  got=$(gliff_env 2>/dev/null) || got=
+  [[ $got == "$want" ]] && break
+  sleep 0.5
+done
+[[ $got == "$want" ]] || fail "sshd activating when the session started: the ssh session got '$got', not '$want', 30 s later"
+pass "sshd started after the session, before it, and while the session's prepare ran: ssh sessions get GLIFF_VIDEO and GLIFF_CAPTURE each way"
 
 echo "gliff test passed ($gpu: GLIFF_VIDEO=$video GLIFF_CAPTURE=$capture)"

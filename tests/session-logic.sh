@@ -122,8 +122,8 @@ expect "render node: a card without one" "$(render_node "$drm_class/card1")" ""
 # The monitor rules for a GPU: the card's connectors at start, and any name
 # the kernel gives a connector, are turned off; Hyprland's own outputs,
 # HEADLESS-N and gliff's gliff-N, never are. prepare also writes the gliff
-# environment sshd gives ssh sessions, for every kind of card, and reloads
-# sshd.
+# environment sshd gives ssh sessions, for every kind of card, and has sshd
+# read it again (reload_sshd).
 docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "image $IMAGE not found (run make image)"
 env_file=$tmp/session.env
 rules=$tmp/container.lua
