@@ -102,9 +102,9 @@ if [[ -n ${OMANYWHERE_TEST_EXPECT_SKIP:-} ]]; then
   session=$(cexec "$name" systemctl show -P ActiveState,Result omanywhere-session.service | paste -sd ' ')
   [[ $session == "inactive exec-condition" ]] ||
     fail "omanywhere-session.service is '$session', not 'inactive exec-condition' (skipped)"
-  cexec "$name" journalctl -b -u omanywhere-session.service --no-pager | grep -qF "$OMANYWHERE_TEST_EXPECT_SKIP" ||
+  cexec "$name" journalctl -b -u omanywhere-session.service --no-pager | grep -F "$OMANYWHERE_TEST_EXPECT_SKIP" >/dev/null ||
     fail "the journal does not say: $OMANYWHERE_TEST_EXPECT_SKIP"
-  docker logs "$name" 2>&1 | grep -qF "$OMANYWHERE_TEST_EXPECT_SKIP" || fail "docker logs does not say: $OMANYWHERE_TEST_EXPECT_SKIP"
+  docker logs "$name" 2>&1 | grep -F "$OMANYWHERE_TEST_EXPECT_SKIP" >/dev/null || fail "docker logs does not say: $OMANYWHERE_TEST_EXPECT_SKIP"
   pass "omanywhere-session.service skipped on $cards, and the journal and docker logs say: $OMANYWHERE_TEST_EXPECT_SKIP"
   check_failed "$name" "$here/allowed-failed.txt"
   echo "desktop test passed ($cards: skipped as expected)"

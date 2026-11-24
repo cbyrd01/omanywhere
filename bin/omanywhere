@@ -133,7 +133,7 @@ cexec() {
 # /var/run/cdi, without root).
 cdi_gpu() {
   docker info --format '{{range .DiscoveredDevices}}{{.ID}}{{"\n"}}{{end}}' 2>/dev/null |
-    grep -qx 'nvidia.com/gpu=all'
+    grep -x 'nvidia.com/gpu=all' >/dev/null
 }
 
 # card_render CARD: the host's render node (/dev/dri/renderDN) on the same

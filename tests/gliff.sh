@@ -115,7 +115,7 @@ print(data.hex())
 ' &
 listener=$!
 for ((i = 0; i < 100; i++)); do
-  ss -Hltn 'sport = :7998' | grep -q . && break
+  [[ -n $(ss -Hltn 'sport = :7998') ]] && break
   kill -0 "$listener" 2>/dev/null || exit 1
   sleep 0.1
 done
@@ -159,7 +159,7 @@ out=$(timeout 120 "${ssh[@]}" bash -s <<'EOF' 2>&1
 RUST_LOG=info gliff-server --listen 127.0.0.1:7999 --headless >/tmp/gliff-server.log 2>&1 &
 server=$!
 for ((i = 0; i < 100; i++)); do
-  ss -Hltn 'sport = :7999' | grep -q . && break
+  [[ -n $(ss -Hltn 'sport = :7999') ]] && break
   kill -0 "$server" 2>/dev/null || {
     echo "gliff-server exited before it listened:"
     cat /tmp/gliff-server.log
