@@ -398,7 +398,7 @@ If another program has taken port $port, free it and run up again, or delete the
 
   # No owner or no sshd, no way in: fail loudly, with the unit's journal,
   # and leave the container stopped, not running unreachable.
-  # sshd may be reloading at that moment, which serves as well as active.
+  # A unit in "reloading" still serves; accept it as well as active.
   local unit
   for unit in omanywhere-owner.service sshd.service; do
     [[ $(unit_state "$unit") != "active "* && $(unit_state "$unit") != "reloading "* ]] || continue
