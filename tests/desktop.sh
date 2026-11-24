@@ -140,9 +140,29 @@ pass "hyprctl -j monitors as $user: $count monitor(s) after $((i / 2)) s"
 check_no_physical "at start"
 cexec "$name" systemctl is-active --quiet omanywhere-session.service || fail "omanywhere-session.service is not active"
 
-# What Hyprland renders with, for the record.
+# What Hyprland renders with. When the card has a render node the owner can
+# open, the renderer must be hardware: a software one (llvmpipe, softpipe,
+# lavapipe) there means the GPU is unused and the desktop is slow. The session
+# already decided whether there is such a node: prepare writes GLIFF_VIDEO=gpu
+# to the sshd environment file only for a GPU card with a render node (the
+# group of every node was checked above). Reading that avoids repeating
+# render_node's search. With no render node (vkms, bochs-display) the renderer
+# is only reported: what Mesa falls back to there isn't ours to assert.
 log=$(cexec "$name" bash -c "cat /run/user/$uid/hypr/*/hyprland.log" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g') || log=
-grep -E 'Starting backend for|\]: Renderer:' <<<"$log" | sed 's/^.*\] *: //' | sort -u | sed 's/^/info: /' || true
+renderers=$(grep -E '\]: Renderer:' <<<"$log" | sed 's/^.*\] *: //' | sort -u) || renderers=
+grep -E 'Starting backend for' <<<"$log" | sed 's/^.*\] *: //' | sort -u | sed 's/^/info: /' || true
+if cexec "$name" grep -qx 'SetEnv GLIFF_VIDEO=gpu .*' /run/omanywhere/sshd/gliff.conf 2>/dev/null; then
+  [[ -n $renderers ]] || fail "Hyprland's log has no 'Renderer:' line, so it can't be shown to use the GPU"
+  if grep -qiE 'llvmpipe|softpipe|lavapipe' <<<"$renderers"; then
+    echo "--- Hyprland's log lines about the backend and renderer" >&2
+    grep -iE 'Starting backend|Creating CDRMRenderer|Renderer:|llvmpipe|softpipe|lavapipe' <<<"$log" | cut -c1-200 | head -20 >&2 || true
+    fail "the card has a render node, but Hyprland renders in software: ${renderers//$'\n'/; }"
+  fi
+  pass "Hyprland renders on the GPU: ${renderers//$'\n'/; }"
+else
+  [[ -z $renderers ]] || printf 'info: %s\n' "${renderers//$'\n'/; }"
+  echo "info: no render node for the card: renderer not asserted"
+fi
 
 # A screenshot that isn't one flat colour: Omarchy's wallpaper or bar drew.
 display=$(cexec "$name" bash -c "cd /run/user/$uid && ls wayland-[0-9]*" 2>/dev/null | grep -v lock | head -1) ||

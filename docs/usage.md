@@ -202,11 +202,19 @@ even when no screen is attached. `--gpu` chooses the card:
      it under discovered devices);
   2. `dri` if the host has a `/dev/dri/card*`;
   3. no device otherwise. The desktop is then skipped, and `up` says why.
-- `nvidia` uses `--device nvidia.com/gpu=all`. The host needs `nvidia-container-toolkit` (in
-  Arch's extra repository), whose `nvidia-cdi-refresh` service writes the spec to
-  `/var/run/cdi` at boot and whenever the driver changes. `nvidia_drm` must be loaded with
-  `modeset=1`, so the card has a `/dev/dri/card*` node. Docker 28.3 and newer reads CDI specs
-  by default, so you don't need `--runtime=nvidia`.
+- `nvidia` uses `--device nvidia.com/gpu=all`. `nvidia_drm` must be loaded with `modeset=1`, so
+  the card has a `/dev/dri/card*` node. Docker 28.3 and newer reads CDI specs by default, so
+  you don't need `--runtime=nvidia`. On Arch, set the host up once (other distributions are
+  untested):
+
+  ```sh
+  sudo pacman -S --needed nvidia-container-toolkit
+  sudo systemctl restart nvidia-cdi-refresh.service   # first time only
+  nvidia-ctk cdi list                                  # expect nvidia.com/gpu=all
+  ```
+
+  `nvidia-cdi-refresh` writes the spec to `/var/run/cdi`. After the first time, its `.path`
+  unit and boot run it again whenever the driver changes.
 - `dri` uses `--device /dev/dri`, which covers AMD and Intel GPUs and a host vkms card.
 - `none` uses no device. You get ssh and no desktop.
 
@@ -248,6 +256,13 @@ Start with `omanywhere status NAME`.
   Usually a key line isn't a key.
 - **The desktop restarts, or is `failed`.** Run `docker exec omanywhere-NAME journalctl -b -u
   omanywhere-session`. Hyprland's own log is in `/run/user/1000/hypr/*/hyprland.log`.
+- **Is the desktop on the GPU?** The renderer in Hyprland's log names the GPU, not
+  llvmpipe, and gliff's probe passes the Vulkan Video encode:
+
+  ```sh
+  ssh omanywhere-NAME 'grep -h "\]: Renderer:" /run/user/1000/hypr/*/hyprland.log'
+  ssh omanywhere-NAME gliff-probe all | grep 'PASS Vulkan Video'
+  ```
 
 To check gliff inside the container, use `gliff-probe` over ssh:
 
