@@ -1,0 +1,12 @@
+name: Measure
+on:
+  push:
+    branches: [ci-image]
+permissions:
+  contents: read
+jobs:
+  m:
+    runs-on: ubuntu-26.04
+    steps:
+      - run: |
+          df -h; nproc; free -h; docker info; sudo aa-status | head -5; lsblk
