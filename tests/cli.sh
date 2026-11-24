@@ -113,17 +113,16 @@ for card in card0:vkms card1:amdgpu:renderD128 card2:nvidia:renderD129; do
   }
 done
 # built MODE CDI: gpu_args MODE's device arguments, then what it said, with
-# Docker seeming to have NVIDIA's CDI device when CDI is yes.
+# Docker seeming to have NVIDIA's CDI device when CDI is yes. In a child
+# bash, so the CLI's names (name, config, ...) stay apart from the test's.
 built() {
-  local cdi=$2
-  # shellcheck source=bin/omanywhere
-  (
-    source "$cli"
-    dev_dri=$fake/dri drm_class=$fake/class/drm
+  # shellcheck disable=SC2016 # the script expands its own variables
+  bash -c '
+    source "$1"
+    dev_dri=$2/dri drm_class=$2/class/drm cdi=$3
     cdi_gpu() { [[ $cdi == yes ]]; }
-    gpu_args "$1"
-    echo "devices: ${devices[*]}"
-  ) 2>&1 | sed '/^devices:/!s/^/said: /'
+    gpu_args "$4"
+    echo "devices: ${devices[*]}"' bash "$cli" "$fake" "$2" "$1" 2>&1 | sed '/^devices:/!s/^/said: /'
 }
 nvidia_warning="said: omanywhere: warning: /dev/dri/card2 is an NVIDIA card, and Docker has no NVIDIA CDI device (nvidia.com/gpu=all): the desktop can't use it, as NVIDIA's GBM backend comes only through CDI. Install nvidia-container-toolkit and use --gpu nvidia (see docs/usage.md)"
 expect_built() {
@@ -146,15 +145,14 @@ rm "$fake/dri/card2"
 expect_built dri no "devices: --device /dev/dri"
 pass "--gpu: dri:/dev/dri/cardN passes that card and its own render node; NVIDIA without CDI warns once; a missing card is refused"
 # The form is kept in the settings like the others.
-# shellcheck source=bin/omanywhere
-out=$(
-  source "$cli"
-  settings=$tmp/settings listen=127.0.0.1 port=2222 gpu=dri:/dev/dri/card1 drm_master=
+# shellcheck disable=SC2016 # the script expands its own variables
+out=$(bash -c '
+  source "$1"
+  settings=$2 listen=127.0.0.1 port=2222 gpu=dri:/dev/dri/card1 drm_master=
   save_settings
   gpu=
   load_settings
-  echo "$gpu"
-) || fail "could not save and load the settings"
+  echo "$gpu"' bash "$cli" "$tmp/settings") || fail "could not save and load the settings"
 [[ $out == dri:/dev/dri/card1 ]] || fail "gpu=dri:/dev/dri/card1 came back from the settings as '$out'"
 pass "gpu=dri:/dev/dri/card1 is saved in the settings and read back"
 
