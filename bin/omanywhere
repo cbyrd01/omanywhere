@@ -14,8 +14,6 @@
 # Its password, keys and settings are kept in OMANYWHERE_CONFIG_DIR/NAME
 # (default ~/.config/omanywhere/NAME, mode 0700). OMANYWHERE_IMAGE is the image
 # (default omanywhere:dev, built by make image); it is never pulled.
-# OMANYWHERE_GITHUB is where --github fetches USER.keys from (default
-# https://github.com; a GitHub Enterprise server's URL, say).
 set -euo pipefail
 
 image=${OMANYWHERE_IMAGE:-omanywhere:dev}
@@ -85,6 +83,10 @@ check() {
       die "$3 '$2': takes an IPv4 or IPv6 address, such as 127.0.0.1 or a tailnet address" ;;
     drm_master) [[ $2 == allow ]] || die "$3 '$2': takes allow" ;;
     port) [[ $2 =~ ^[1-9][0-9]{0,4}$ && $2 -le 65535 ]] || die "$3 '$2': takes a TCP port" ;;
+    # GitHub's rule: letters, digits and single inner hyphens, up to 39
+    # characters. It also keeps the URL's path to one component.
+    github) [[ $2 =~ ^[A-Za-z0-9]([A-Za-z0-9]|-[A-Za-z0-9]){0,38}$ ]] ||
+      die "$3 '$2': takes a GitHub user name, such as octocat" ;;
   esac
 }
 
@@ -239,11 +241,10 @@ has_key() {
 
 # github_keys USER: print the public keys GitHub publishes for USER at
 # https://github.com/USER.keys, as ssh-import-id and cloud-init fetch them,
-# and say which they are. HTTPS only, redirects included (file: is allowed for
-# an OMANYWHERE_GITHUB the caller sets, which tests/cli.sh uses).
+# and say which they are. HTTPS only, redirects included.
 github_keys() {
-  local url=${OMANYWHERE_GITHUB:-https://github.com}/$1.keys keys fingerprints
-  keys=$(curl --fail --silent --show-error --location --proto =https,file --proto-redir =https \
+  local url=https://github.com/$1.keys keys fingerprints
+  keys=$(curl --fail --silent --show-error --location --proto =https --proto-redir =https \
     --max-time 20 --max-filesize 1048576 "$url") || die "--github $1: couldn't fetch $url"
   has_key "$keys" || die "no ssh key for GitHub user $1: $url lists none"
   fingerprints=$(ssh-keygen -l -f /dev/stdin <<<"$keys" 2>&1) ||
@@ -380,10 +381,7 @@ cmd_up() {
         keyfile=$2
         ;;
       --github)
-        # GitHub's own rule: letters, digits and single inner hyphens, up to
-        # 39 characters. It also keeps the URL's path to one component.
-        [[ ${2:-} =~ ^[A-Za-z0-9]([A-Za-z0-9]|-[A-Za-z0-9]){0,38}$ ]] ||
-          die "--github takes a GitHub user name, such as octocat"
+        check github "${2:-}" --github
         github=$2
         ;;
       --listen)

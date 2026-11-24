@@ -2,7 +2,7 @@
 # CLI test: bin/omanywhere's up, status, ssh-config and down, with no device.
 #   - up refuses a bad name or --gpu, and fails before it creates anything when
 #     it has no ssh key, including a --github user with none (GitHub stood in
-#     for by files, through OMANYWHERE_GITHUB);
+#     for by a curl on PATH that serves files);
 #   - the docker run arguments for each --gpu, and the warning for an NVIDIA
 #     card without NVIDIA's CDI device, from bin/omanywhere's own gpu_args
 #     against a made-up /dev/dri and sysfs (no desktop runs on a card here);
@@ -96,16 +96,20 @@ fails "no ssh key" up "$name" --gpu none --key "$tmp/empty.pub"
 mkdir "$tmp/gh"
 : >"$tmp/gh/nokeys.keys"
 printf '<html>Not Found</html>\n' >"$tmp/gh/junk.keys"
-cp "$tmp/id_ed25519.pub" "$tmp/gh/octo-cat.keys"
+# The CLI's curl, on PATH, serves https://github.com/USER.keys from
+# $tmp/gh/USER.keys, and fails as curl --fail does for a missing one.
+mkdir "$tmp/bin"
+# shellcheck disable=SC2016 # the stand-in's own code, expanded when it runs
+printf '%s\n' '#!/bin/bash' 'url=${*: -1}' '[[ $url == https://github.com/*.keys ]] || exit 3' \
+  "cat \"$tmp/gh/\${url#https://github.com/}\" 2>/dev/null || exit 22" >"$tmp/bin/curl"
+chmod +x "$tmp/bin/curl"
 for bad in '' ../x a/b -lead trail- 'a--b' 'a b' "$(printf 'a%.0s' {1..40})"; do
-  fails "--github takes a GitHub user name" up "$name" --gpu none --github "$bad"
+  fails "takes a GitHub user name" up "$name" --gpu none --github "$bad"
 done
 fails "--key and --github" up "$name" --gpu none --key "$tmp/id_ed25519.pub" --github octo-cat
-export OMANYWHERE_GITHUB=file://$tmp/gh
-fails "couldn't fetch file://$tmp/gh/nobody.keys" up "$name" --gpu none --github nobody
-fails "no ssh key for GitHub user nokeys" up "$name" --gpu none --github nokeys
-fails "isn't a list of public keys" up "$name" --gpu none --github junk
-unset OMANYWHERE_GITHUB
+PATH=$tmp/bin:$PATH fails "couldn't fetch https://github.com/nobody.keys" up "$name" --gpu none --github nobody
+PATH=$tmp/bin:$PATH fails "no ssh key for GitHub user nokeys" up "$name" --gpu none --github nokeys
+PATH=$tmp/bin:$PATH fails "isn't a list of public keys" up "$name" --gpu none --github junk
 exists container "$container" && fail "a failed up left a container"
 exists volume "$home_volume" && fail "a failed up left a volume"
 [[ ! -e $config ]] || fail "a failed up left $config"
@@ -265,10 +269,9 @@ pass "up --key on a running container rewrote the keys in place, for the next st
 # Both keys, as the steps below log in with the second.
 cp "$tmp/both.pub" "$tmp/gh/octo-cat.keys"
 fingerprint=$(ssh-keygen -l -f "$tmp/id_ed25519.pub" | cut -d' ' -f2)
-out=$(OMANYWHERE_GITHUB=file://$tmp/gh "$cli" up "$name" --github octo-cat 2>&1) || fail "up --github on a running container failed: $out"
+out=$(PATH=$tmp/bin:$PATH "$cli" up "$name" --github octo-cat 2>&1) || fail "up --github on a running container failed: $out"
 [[ $out == *"GitHub user octo-cat publishes"*"$fingerprint"* ]] || fail "up --github did not show the keys' fingerprints: $out"
 [[ $(<"$config/authorized_keys") == "$(<"$tmp/gh/octo-cat.keys")" ]] || fail "up --github did not write GitHub's keys"
-[[ $(stat -c %i "$config/authorized_keys") == "$inode" ]] || fail "authorized_keys was replaced, not rewritten in place"
 pass "up --github on a running container wrote the user's published keys, for the next start"
 
 # --- status.

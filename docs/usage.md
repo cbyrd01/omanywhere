@@ -66,7 +66,7 @@ container, run `down NAME` and then `up NAME --option`.
 |---|---|---|
 | `--gpu auto\|none\|nvidia\|dri\|dri:/dev/dri/cardN` | `auto` | The DRM card the desktop runs on (see [CPU and GPU hosts](#cpu-and-gpu-hosts)). |
 | `--key FILE` | your ssh agent's keys | The public keys that may log in. `up` copies them to the config directory. |
-| `--github USER` | | Instead of `--key`: the public keys GitHub publishes for USER at `https://github.com/USER.keys`. `up` prints their fingerprints and copies them, as `--key` does. `OMANYWHERE_GITHUB` sets another server, such as GitHub Enterprise. |
+| `--github USER` | | Instead of `--key`: the public keys GitHub publishes for USER at `https://github.com/USER.keys`. `up` prints their fingerprints and copies them, as `--key` does. |
 | `--listen ADDR` | `127.0.0.1` | The address ssh is published on, such as a tailnet address. |
 | `--drm-master allow` | off | Lets the desktop take DRM master of a GPU that no display server holds (see [DRM master](#drm-master)). |
 
