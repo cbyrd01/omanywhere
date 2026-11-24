@@ -35,13 +35,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Runner resources
+      # The runner's 72 GB disk has 15 GB free, and the build needs about
+      # 30 GB (the 12 GB image, plus the multi-stage export's second copy). The
+      # first run died with "No space left on device". These preinstalled
+      # toolchains are unused here and make up about 31 GB, so delete them.
+      - name: Free disk space
         run: |
-          df -h / /mnt
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /usr/local/.ghcup \
+            /usr/share/swift /opt/hostedtoolcache
+          df -h /
           nproc
           free -h
           docker info
-          sudo aa-status 2>&1 | head -5 || true
       - name: Verify the Arch base image
         run: make verify-base
       - name: Build the image
