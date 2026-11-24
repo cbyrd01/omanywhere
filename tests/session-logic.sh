@@ -81,15 +81,19 @@ expect "a card without connectors" "$(classify "$drm_class/card8")" \
   "ignored msm_drm no KMS: the card has no connectors"
 
 # The DRM master ruling: a GPU nobody is master of is refused unless allowed;
-# a virtual card is never probed.
+# a virtual card someone else is master of (the host's desktop, which takes
+# a vkms card on its seat) is refused, since the desktop couldn't draw on it.
 expect "GPU, master held by the host" "$(verdict gpu held '')" use
 expect "GPU, no master" "$(verdict gpu free '')" refuse
 expect "GPU, no master, a wrong value" "$(verdict gpu free yes)" refuse
 expect "GPU, no master, OMANYWHERE_DRM_MASTER=allow" "$(verdict gpu free allow)" use
-expect "virtual card" "$(verdict virtual n/a '')" use
+expect "virtual card, no master" "$(verdict virtual free '')" use
+expect "virtual card, master held" "$(verdict virtual held '')" refuse
+expect "virtual card, master held, allowed" "$(verdict virtual held allow)" refuse
 
 # guard_master, with probe_master stood in for (it answers $probe): it probes
-# a GPU only, and refuses one nobody is master of unless allowed, saying why.
+# every card, refuses a GPU nobody is master of unless allowed, and a virtual
+# card someone else is master of, saying why.
 probe=
 probe_master() {
   [[ $probe != never ]] || return 1 # a probe that must not happen fails
@@ -106,7 +110,11 @@ expect "guard: GPU, master held" "$(guarded gpu held '')" "0 (nothing)"
 expect "guard: GPU, no master" "$(guarded gpu free '')" "1 $refusal"
 expect "guard: GPU, no master, allowed" "$(guarded gpu free allow)" \
   "0 omanywhere-session: no display server holds DRM master on /dev/dri/card9; taking it, as OMANYWHERE_DRM_MASTER=allow says"
-expect "guard: virtual card, never probed" "$(guarded virtual never '')" "0 (nothing)"
+expect "guard: virtual card, no master" "$(guarded virtual free '')" "0 (nothing)"
+expect "guard: virtual card, master held" "$(guarded virtual held '')" \
+  "1 omanywhere-session: another process, most likely the host's desktop, is DRM master of /dev/dri/card9, a virtual card, so the desktop can't draw on it (see DRM master in docs/usage.md)"
+expect "guard: virtual card, can't probe" "$(guarded virtual never '')" \
+  "1 omanywhere-session: can't open /dev/dri/card9 to check its DRM master"
 
 # How gliff-server captures and encodes over ssh: on the GPU only when the
 # chosen card has a render node of its own in the container, on the CPU (with
