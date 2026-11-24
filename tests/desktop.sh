@@ -116,11 +116,17 @@ pass "DRM card(s) in the container: $cards"
 # whatever PID 1's groups are.
 owner_gids=" $(cexec "$name" id -G "$user") "
 for node in $(cexec "$name" bash -c 'shopt -s nullglob; echo /dev/dri/card* /dev/dri/renderD*'); do
-  gid=$(cexec "$name" stat -c %g "$node")
-  ((gid == 0)) && continue
+  read -r gid group mode < <(cexec "$name" stat -c '%g %G %a' "$node")
+  if ((gid == 0)); then
+    (((8#$mode & 8#006) == 8#006)) || fail "$node is in root's group with mode $mode, so $user can't open it"
+    continue
+  fi
   [[ $owner_gids == *" $gid "* ]] || fail "$user is not in gid $gid, the group of $node (groups:$owner_gids)"
+  want=video
+  [[ $node == */renderD* ]] && want=render
+  [[ $group == "$want" ]] || fail "$node is in group $group, not the container's $want group"
 done
-pass "$user is in the group of every DRM node (gids:$owner_gids)"
+pass "$user can open every DRM node: in its group, or the node is world read-write (gids:$owner_gids)"
 
 # Hyprland answers as the owner within 60 s with at least one monitor, and
 # never with a physical connector.

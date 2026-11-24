@@ -84,29 +84,38 @@ user_groups() {
   echo "$groups"
 }
 
-# dri_groups: a group for the gid of each DRM node in the container, which the
-# owner joins so the desktop session can open the card and render node. The
-# nodes keep the host's gids (Docker copies them, CDI sets them), which need
-# not match any group here; a gid the container has no group for gets one,
-# omanywhere-gpu-GID. The session's processes have only the owner's groups,
-# never PID 1's (docker --group-add, CDI's additionalGids), so the owner must
-# hold the gids themselves. Root's group is never given.
+# dri_groups: puts each DRM node in the container's own video (card) or
+# render (renderD) group, and names those groups for the owner to join. The
+# nodes arrive with the host's gids, and the same number here can be any
+# group, such as empower, which polkit lets do anything. Only nodes runc made
+# in the container's /dev are changed (same filesystem as /dev), never one
+# mounted in from the host. The session's processes have only the owner's
+# groups, never PID 1's (docker --group-add, CDI's additionalGids). A node in
+# root's group stays there.
 dri_groups() {
-  local node gid mode group groups=()
+  local node gid mode ndev dev group groups=()
   for node in /dev/dri/card* /dev/dri/renderD*; do
     [[ -c $node ]] || continue
-    read -r gid mode < <(stat -c '%g %a' "$node")
+    read -r gid mode ndev < <(stat -c '%g %a %d' "$node")
     if ((gid == 0)); then
       # A node in root's group the owner can only open if everyone may.
       (((8#$mode & 8#006) == 8#006)) ||
         echo "Warning: DRM node $node is in root's group (mode $mode), which the owner never gets, so the desktop can't open it; give the container the node with a group of its own (the host's video or render group)" >&2
       continue
     fi
-    if ! group=$(getent group "$gid" | cut -d: -f1) || [[ -z $group ]]; then
-      group=omanywhere-gpu-$gid
-      groupadd -r -g "$gid" "$group"
+    dev=${dev:-$(stat -c %d /dev)}
+    if [[ $ndev != "$dev" ]]; then
+      echo "Warning: DRM node $node is mounted in from the host, so it keeps host gid $gid and the desktop can't open it; pass the card with --device" >&2
+      continue
     fi
-    echo "DRM node $node: gid $gid, group $group" >&2
+    [[ $node == /dev/dri/card* ]] && group=video || group=render
+    if ! chgrp "$group" "$node"; then
+      echo "Warning: can't put DRM node $node in group $group; the desktop can't open it" >&2
+      continue
+    fi
+    (((8#$mode & 8#060) == 8#060)) ||
+      echo "Warning: DRM node $node has mode $mode, with no read and write for its group; the desktop can't open it" >&2
+    echo "DRM node $node: host gid $gid, group $group here" >&2
     [[ " ${groups[*]} " == *" $group "* ]] || groups+=("$group")
   done
   local IFS=,

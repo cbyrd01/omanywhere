@@ -223,6 +223,18 @@ cexec "$second" test ! -e "$nopasswd" || fail "$nopasswd is still there with OMA
 out=$(cexec "$second" runuser -u "$user" -- sudo -n true 2>&1) && fail "sudo still ran without a password, with OMANYWHERE_SUDO unset"
 pass "OMANYWHERE_SUDO unset: the rule is removed, and sudo asks for the password again"
 
+# A DRM node in host gid 997, which is empower here, goes to video instead.
+cexec "$second" bash -c 'mkdir -p /dev/dri && mknod -m 0660 /dev/dri/card9 c 226 9 && chgrp 997 /dev/dri/card9' ||
+  fail "can't make a test DRM node in gid 997"
+[[ $(cexec "$second" getent group 997 | cut -d: -f1) == empower ]] ||
+  fail "gid 997 is not empower in the image; pick another polkit-trusted gid for this test"
+out=$(docker exec -e OMANYWHERE_SUDO= "$second" /usr/lib/omanywhere/owner 2>&1) || fail "the owner script failed with a DRM node in gid 997: $out"
+node_group=$(cexec "$second" bash -c 'stat -c %G /dev/dri/card9; rm -f /dev/dri/card9')
+[[ $node_group == video ]] || fail "the DRM node in gid 997 is in group $node_group, not video"
+groups=" $(cexec "$second" id -nG "$user") "
+[[ $groups == *" video "* && $groups != *" empower "* ]] || fail "$user's groups with a DRM node in gid 997:$groups"
+pass "a DRM node in host gid 997 (empower here): moved to video, and $user is not in empower"
+
 # --- No key at all: the unit fails and says why, and sshd stays down.
 start_container "$nokey"
 wait_running "$nokey" 120 >/dev/null || fail "$nokey: systemd did not finish booting"
