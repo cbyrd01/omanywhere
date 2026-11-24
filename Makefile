@@ -5,7 +5,8 @@ GIT_COMMON_DIR := $(shell git rev-parse --path-format=absolute --git-common-dir)
 TOOLS = docker run --rm --network none -v "$(CURDIR):$(CURDIR):ro" \
 	-v "$(GIT_COMMON_DIR):$(GIT_COMMON_DIR):ro" -w "$(CURDIR)" $(TOOLS_IMAGE)
 
-.PHONY: lint tools shellcheck secrets secrets-staged hooks verify-base image test test-boot test-owner
+.PHONY: lint tools shellcheck secrets secrets-staged hooks verify-base image test test-boot test-owner \
+	test-session-logic test-desktop test-desktop-vm
 
 lint: shellcheck secrets
 
@@ -34,10 +35,28 @@ verify-base: tools
 image: verify-base
 	docker build -f image/Containerfile -t $(IMAGE) .
 
-test: test-boot test-owner
+# The legs that need no device. The desktop's legs need a card or /dev/kvm:
+# test-desktop and test-desktop-vm.
+test: test-session-logic test-boot test-owner
+
+# The desktop session's decisions, with no device (the image's Lua runs the
+# monitor rules).
+test-session-logic: image
+	tests/session-logic.sh
 
 test-boot: image
 	IMAGE=$(IMAGE) tests/boot.sh
 
 test-owner: image
 	IMAGE=$(IMAGE) tests/owner.sh
+
+# OMANYWHERE_TEST_DEVICES gives the container its DRM card (see
+# tests/desktop.sh), such as --device nvidia.com/gpu=all.
+test-desktop: image
+	IMAGE=$(IMAGE) tests/desktop.sh
+
+# tests/desktop.sh in a KVM guest (tests/vm/run): a GPU no display server is
+# master of (refused, then allowed), and the CPU-only leg on vkms, which the
+# guest loads in its own kernel. Needs /dev/kvm and about 30 GB.
+test-desktop-vm: image
+	IMAGE=$(IMAGE) BASE_IMAGE=$(BASE_IMAGE) tests/vm/run

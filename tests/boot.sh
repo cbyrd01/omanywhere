@@ -67,27 +67,27 @@ cexec "$name" pacman-key --list-keys "$omarchy_fpr" >/dev/null 2>&1 ||
   fail "the first-boot pacman keyring lacks Omarchy's key $omarchy_fpr"
 pass "first-boot pacman keyring made, with Omarchy's key"
 
+# The desktop: Omarchy's display manager has no place here, the session unit
+# replaces it, and with no DRM card (none is given here) the session is
+# skipped, not failed, and says which device is missing in the journal and in
+# docker logs. tests/desktop.sh runs it on a card.
+[[ $(cexec "$name" systemctl show -P ConditionResult sddm.service) == no ]] ||
+  fail "sddm.service was not skipped by its container condition"
+pass "sddm.service skipped in the container"
+session=$(cexec "$name" systemctl show -P ActiveState,Result omanywhere-session.service | paste -sd ' ')
+[[ $session == "inactive exec-condition" ]] ||
+  fail "with no DRM card, omanywhere-session.service is '$session', not 'inactive exec-condition'"
+missing='omanywhere-session: no DRM card (/dev/dri/card*) in the container'
+cexec "$name" journalctl -b -u omanywhere-session.service --no-pager | grep -qF "$missing" ||
+  fail "the journal does not say the DRM card is missing"
+docker logs "$name" 2>&1 | grep -qF "$missing" || fail "docker logs does not say the DRM card is missing"
+pass "no DRM card: omanywhere-session.service skipped, and the journal and docker logs say why"
+
 # Every failed (or restart-looping) unit must be in the allow list, which
 # carries a reason for each.
-failed=$(failed_units "$name" | sort)
-allowed=$(sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' "$here/allowed-failed.txt" | sort)
-# An empty list still echoes one blank line, which comm would report.
-unexpected=$(comm -13 <(echo "$allowed") <(echo "$failed") | sed '/^$/d')
-comm -23 <(echo "$allowed") <(echo "$failed") | sed -e '/^$/d' -e 's/^/note: allowed to fail but did not: /'
-if [[ -n $unexpected ]]; then
-  while read -r unit; do
-    echo "--- $unit" >&2
-    cexec "$name" systemctl status --no-pager --lines 10 "$unit" >&2 || true
-  done <<<"$unexpected"
-  fail "units failed that tests/allowed-failed.txt does not allow: ${unexpected//$'\n'/ }"
-fi
-if [[ -n $failed ]]; then
-  pass "failed units are all allowed ($(grep -c . <<<"$failed"): ${failed//$'\n'/ })"
-else
-  # A clean boot is `running`; only a failed unit may leave it degraded.
-  [[ $state == running ]] || fail "no unit failed, yet systemd is $state, not running"
-  pass "no failed units: systemd is running"
-fi
+check_failed "$name" "$here/allowed-failed.txt"
+# A clean boot is `running`; only a failed unit may leave it degraded.
+[[ $state == running || -n $(failed_units "$name") ]] || fail "no unit failed, yet systemd is $state, not running"
 
 # A clean systemd shutdown, not the SIGKILL docker sends after the timeout.
 start=$(date +%s%N)

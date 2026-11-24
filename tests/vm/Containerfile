@@ -1,0 +1,39 @@
+# The KVM guest for tests/desktop.sh's legs that can't run on a desktop host,
+# and the QEMU that runs it (tests/vm/run): the CPU-only leg on a vkms card
+# (a kernel module: loading it on a desktop host would hot-plug a monitor
+# into it), and a GPU that no display server is DRM master of (QEMU's
+# bochs-display), which the session must refuse unless told otherwise. All of it
+# happens in the guest's own kernel, so the test host's display is never
+# touched.
+#
+# Arch Linux only: the same verified base as image/Containerfile (BASE_IMAGE,
+# from `make verify-base`), Arch's packages from Omarchy's stable mirror as
+# there: linux (the guest's kernel and its vkms module), docker, openssh
+# (ssh-keygen for the test), qemu-base and e2fsprogs (to make and boot the
+# guest's disk).
+ARG BASE_IMAGE
+FROM $BASE_IMAGE
+
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
+
+RUN --mount=type=cache,target=/var/cache/pacman/pkg,sharing=locked \
+    echo 'Server = https://stable-mirror.omarchy.org/$repo/os/$arch' >/etc/pacman.d/mirrorlist && \
+    pacman-key --init && \
+    pacman-key --populate archlinux && \
+    pacman -Syu --noconfirm --needed linux mkinitcpio docker openssh qemu-base e2fsprogs
+
+# A kernel and an initramfs to boot the guest with (no autodetect: the build
+# host's hardware is not the guest's).
+RUN kver=$(basename /usr/lib/modules/*) && \
+    mkinitcpio -k "$kver" -S autodetect,kms,keyboard,keymap,consolefont,microcode,plymouth \
+      -g /boot/initramfs-vm.img && \
+    cp "/usr/lib/modules/$kver/vmlinuz" /boot/vmlinuz-vm
+
+# The guest boots systemd and runs tests/vm/guest from the read-only share
+# "tests", writing to the share "vm"; then it powers off. systemd-firstboot
+# would stop the boot to ask for a timezone on the serial console.
+COPY modules-load.conf /etc/modules-load.d/omanywhere-vm.conf
+COPY fstab /etc/fstab
+COPY omanywhere-vm-test.service /etc/systemd/system/
+RUN systemctl enable docker.service omanywhere-vm-test.service && \
+    systemctl mask systemd-firstboot.service

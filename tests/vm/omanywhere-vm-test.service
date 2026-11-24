@@ -1,0 +1,15 @@
+# Runs tests/vm/guest once the shares and Docker are up, then powers the
+# guest off.
+[Unit]
+Description=Omanywhere desktop test in the guest
+After=docker.service
+Requires=docker.service
+RequiresMountsFor=/tests /vm
+
+[Service]
+Type=oneshot
+ExecStart=/tests/vm/guest
+ExecStopPost=/usr/bin/systemctl --no-block poweroff
+
+[Install]
+WantedBy=multi-user.target

@@ -1,4 +1,5 @@
 # Units that may fail when the image boots, one per line, each with a reason.
-# Empty: the omanywhere package skips the units that have no work in a
-# container (package/omanywhere/container-units), so a clean boot has no failed
-# unit and systemd reports `running`. Add a unit here only with its reason.
+# The omanywhere package skips the units that have no work in a container
+# (package/omanywhere/container-units) and fixes the ones it can
+# (package/omanywhere/polkit.conf), so a clean boot has no failed unit and
+# systemd reports `running`. Add a unit here only with its reason.

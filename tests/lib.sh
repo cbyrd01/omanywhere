@@ -9,7 +9,13 @@ IMAGE=${IMAGE:-omanywhere:dev}
 # How systemd runs as PID 1 under Docker 29 with no privilege: a private cgroup
 # namespace made writable (only the container's own subtree), and tmpfs where
 # systemd expects one. The image sets container=docker and STOPSIGNAL itself.
+# --tty gives systemd a console (/dev/console), as systemd's container
+# interface asks: without one, systemd sends its own output and the units'
+# console output to /dev/null, and docker logs is empty. With it, docker logs
+# shows the boot and the desktop session's skip or refusal messages (and the
+# stock console getty's login prompt, which Task 5 deals with).
 RUN_FLAGS=(
+  --tty
   --cgroupns=private
   --security-opt writable-cgroups=true
   --tmpfs /run
@@ -108,6 +114,31 @@ wait_settled() {
 failed_units() {
   cexec "$1" systemctl list-units --all --plain --no-legend --full --state=failed,auto-restart |
     awk '{ print $1 }'
+}
+
+# check_failed NAME LIST: every failed (or restart-looping) unit in container
+# NAME must be in LIST, one unit per line with its reason as a comment. Notes
+# the units LIST allows that did not fail, and shows the status of any it
+# doesn't allow before failing.
+check_failed() {
+  local name=$1 list=$2 failed allowed unexpected unit
+  failed=$(failed_units "$name" | sort)
+  allowed=$(sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' "$list" | sort)
+  # An empty list still echoes one blank line, which comm would report.
+  unexpected=$(comm -13 <(echo "$allowed") <(echo "$failed") | sed '/^$/d')
+  comm -23 <(echo "$allowed") <(echo "$failed") | sed -e '/^$/d' -e 's/^/note: allowed to fail but did not: /'
+  if [[ -n $unexpected ]]; then
+    while read -r unit; do
+      echo "--- $unit" >&2
+      cexec "$name" systemctl status --no-pager --lines 10 "$unit" >&2 || true
+    done <<<"$unexpected"
+    fail "units failed that tests/$(basename "$list") does not allow: ${unexpected//$'\n'/ }"
+  fi
+  if [[ -n $failed ]]; then
+    pass "failed units are all allowed ($(grep -c . <<<"$failed"): ${failed//$'\n'/ })"
+  else
+    pass "no failed units"
+  fi
 }
 
 # cleanup NAME...: remove each container that exists.

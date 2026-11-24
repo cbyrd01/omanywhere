@@ -1,3 +1,4 @@
-# Omanywhere: the owner account, and ssh, the container's way in.
+# Omanywhere: the owner account, ssh, the container's way in, and the desktop.
 enable omanywhere-owner.service
 enable sshd.service
+enable omanywhere-session.service

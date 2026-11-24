@@ -1,8 +1,9 @@
 #!/bin/bash
 # Makes the container's owner: the one account that logs in over ssh and runs
 # Omarchy's desktop. omanywhere-owner.service runs it on every boot, before
-# sshd (which requires it) and the session, and it ends by writing the name to
-# /run/omanywhere/owner.
+# sshd (which requires it) and the session, whose User= it sets; it gives the
+# owner the groups of the container's DRM nodes, and it ends by writing the
+# name to /run/omanywhere/owner.
 #
 # Inputs. Each is read from the first of these that has it:
 #   1. a file under /run/secrets/ (a Docker or Compose secret) named after the
@@ -21,6 +22,11 @@
 #   OMANYWHERE_PASSWORD         password for sudo and the lock screen (optional;
 #                               without one the password is locked)
 #   TZ                          timezone, such as Europe/Paris (optional)
+#   OMANYWHERE_DRM_MASTER       allow: the desktop may take DRM master of a GPU
+#                               no display server holds, which turns off the
+#                               host's outputs; only for a host with no display
+#                               of its own (optional; without it the session
+#                               refuses such a GPU, see /usr/lib/omanywhere/session)
 #
 # /etc comes from the image, so a new container has no account: it is made
 # again on every boot of a new container, with the same uid, over the home the
@@ -70,13 +76,43 @@ user_groups() {
   echo "$groups"
 }
 
+# dri_groups: a group for the gid of each DRM node in the container, which the
+# owner joins so the desktop session can open the card and render node. The
+# nodes keep the host's gids (Docker copies them, CDI sets them), which need
+# not match any group here; a gid the container has no group for gets one,
+# omanywhere-gpu-GID. The session's processes have only the owner's groups,
+# never PID 1's (docker --group-add, CDI's additionalGids), so the owner must
+# hold the gids themselves. Root's group is never given.
+dri_groups() {
+  local node gid mode group groups=()
+  for node in /dev/dri/card* /dev/dri/renderD*; do
+    [[ -c $node ]] || continue
+    read -r gid mode < <(stat -c '%g %a' "$node")
+    if ((gid == 0)); then
+      # A node in root's group the owner can only open if everyone may.
+      (((8#$mode & 8#006) == 8#006)) ||
+        echo "Warning: DRM node $node is in root's group (mode $mode), which the owner never gets, so the desktop can't open it; give the container the node with a group of its own (the host's video or render group)" >&2
+      continue
+    fi
+    if ! group=$(getent group "$gid" | cut -d: -f1) || [[ -z $group ]]; then
+      group=omanywhere-gpu-$gid
+      groupadd -r -g "$gid" "$group"
+    fi
+    echo "DRM node $node: gid $gid, group $group" >&2
+    [[ " ${groups[*]} " == *" $group "* ]] || groups+=("$group")
+  done
+  local IFS=,
+  echo "${groups[*]}"
+}
+
 user=$(input OMANYWHERE_USER omarchy)
 uid=$(input OMANYWHERE_UID 1000)
 keys=$(input OMANYWHERE_AUTHORIZED_KEYS "" authorized_keys)
 password=$(input OMANYWHERE_PASSWORD "" password)
 tz=$(input TZ "")
+drm_master=$(input OMANYWHERE_DRM_MASTER "")
 # Nothing this runs needs them in its environment, least of all the password.
-unset OMANYWHERE_USER OMANYWHERE_UID OMANYWHERE_AUTHORIZED_KEYS OMANYWHERE_PASSWORD TZ
+unset OMANYWHERE_USER OMANYWHERE_UID OMANYWHERE_AUTHORIZED_KEYS OMANYWHERE_PASSWORD TZ OMANYWHERE_DRM_MASTER
 
 # Check every input before changing anything.
 [[ $user =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || fail "OMANYWHERE_USER '$user' is not a valid login name"
@@ -96,6 +132,7 @@ done <<<"$keys"
 ((${#valid_keys[@]})) ||
   fail "no authorized key: set OMANYWHERE_AUTHORIZED_KEYS or mount /run/secrets/authorized_keys; ssh is the only way in"
 [[ $password != *$'\n'* ]] || fail "OMANYWHERE_PASSWORD has more than one line"
+[[ -z $drm_master || $drm_master == allow ]] || fail "OMANYWHERE_DRM_MASTER '$drm_master' is not allow (or unset)"
 if [[ -n $tz && ($tz == *..* || ! -f /usr/share/zoneinfo/$tz) ]]; then
   fail "TZ '$tz' is not a timezone in /usr/share/zoneinfo"
 fi
@@ -121,7 +158,9 @@ else
   fi
   useradd "$create_home" -d "$home" -u "$uid" -g "$uid" -s /bin/bash "$user"
 fi
-usermod -aG "$(user_groups)" "$user"
+owner_groups=$(user_groups)
+dri=$(dri_groups)
+usermod -aG "$owner_groups${dri:+,$dri}" "$user"
 echo "Owner $user (uid $uid) in groups $(id -nG "$user")"
 
 if [[ -n $password ]]; then
@@ -172,6 +211,18 @@ fi
 # when it finds an empty file there (see /usr/lib/tmpfiles.d/omanywhere.conf).
 if [[ ! -s /var/lib/omanywhere/machine-id ]]; then
   echo "Warning: the state volume had no machine-id file at boot, so this boot's machine-id isn't kept; the next boot's will be" >&2
+fi
+
+# The desktop session runs as the owner, and takes OMANYWHERE_DRM_MASTER from
+# here. systemd loaded the session unit before the inputs were known, so
+# reload it when they change.
+dropin=/run/systemd/system/omanywhere-session.service.d/50-owner.conf
+want=$(printf '# Written by /usr/lib/omanywhere/owner at boot.\n[Service]\nUser=%s' "$user")
+[[ -z $drm_master ]] || want+=$'\n'"Environment=OMANYWHERE_DRM_MASTER=$drm_master"
+if [[ ! -f $dropin || $(<"$dropin") != "$want" ]]; then
+  install -D -m 0644 /dev/stdin "$dropin" <<<"$want"
+  systemctl daemon-reload
+  echo "The desktop session runs as $user"
 fi
 
 printf '%s\n' "$user" | install -m 0644 /dev/stdin /run/omanywhere/owner

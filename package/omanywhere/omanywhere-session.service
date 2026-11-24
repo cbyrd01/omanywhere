@@ -1,0 +1,49 @@
+# The container's desktop: Omarchy's Hyprland for the owner, under uwsm, in a
+# logind session, on the DRM card the container was given. It takes the place
+# of Omarchy's display manager, sddm, which is skipped in a container. The
+# steps, how the card is chosen, and when the session refuses a GPU:
+# /usr/lib/omanywhere/session.
+[Unit]
+Description=Omanywhere desktop session
+Documentation=file:/usr/lib/omanywhere/session
+# The owner unit makes the account and gives this unit its User= (and
+# OMANYWHERE_DRM_MASTER, when given), in
+# /run/systemd/system/omanywhere-session.service.d/50-owner.conf.
+Requires=omanywhere-owner.service
+After=omanywhere-owner.service systemd-user-sessions.service systemd-logind.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+PAMName=login
+# A graphical session on seat0, as a display manager opens one. uwsm reads
+# the seat and session from it; seat0 has no VTs in a container.
+Environment=XDG_SEAT=seat0 XDG_SESSION_TYPE=wayland XDG_SESSION_CLASS=user
+# For Hyprland. uwsm hands the environment it starts with to the owner's user
+# manager for the session's length (and takes it back after), which is where
+# Hyprland runs and where uwsm restarts it from; nothing else gets them.
+#   HYPRLAND_CONFIG: the owner's ~/.config/hypr/hyprland.lua, then the
+#     container's monitor rules (/usr/share/omanywhere/hypr/hyprland.lua).
+#   LIBSEAT_BACKEND=noop: Hyprland opens the DRM card itself, through the
+#     owner's groups (/usr/lib/omanywhere/owner), instead of asking logind.
+#     logind can't give it: TakeDevice answers ENODEV for every node, because
+#     logind looks devices up in udev's database and a container runs no udev
+#     (and shouldn't: udev would act on the host's devices). Even with udev,
+#     logind would make the session DRM master, which the host's desktop holds
+#     on a shared GPU. Upstream draft:
+#     notes/upstream/logind-takedevice-without-udev.md.
+Environment=HYPRLAND_CONFIG=/usr/share/omanywhere/hypr/hyprland.lua LIBSEAT_BACKEND=noop
+SyslogIdentifier=omanywhere-session
+# Why the session was skipped or refused shows in docker logs too.
+StandardError=journal+console
+# check and prepare run as root (+), outside the PAM session.
+ExecCondition=+/usr/lib/omanywhere/session check
+ExecStartPre=+/usr/lib/omanywhere/session prepare
+ExecStart=/usr/lib/omanywhere/session start
+# The desktop is always there: after a log out or a crash it starts again.
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=graphical.target

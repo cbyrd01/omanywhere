@@ -7,7 +7,7 @@
 pkgname=omanywhere
 pkgver=0.1.0
 pkgrel=1
-pkgdesc='Run stock Omarchy as a headless container desktop: owner account, ssh, container drop-ins'
+pkgdesc='Run stock Omarchy as a headless container desktop: owner account, ssh, desktop session, container drop-ins'
 arch=(any)
 url='https://github.com/cbyrd01/omanywhere'
 license=(LicenseRef-unspecified)
@@ -25,21 +25,29 @@ source=(
   pre-refresh-pacman
   00-omanywhere-wheel
   container-units
+  session
+  omanywhere-session.service
+  hyprland.lua
+  polkit.conf
 )
 # Local files in this repository, which git already pins.
-sha256sums=(SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP)
+sha256sums=(SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP)
 
 check() {
   visudo -cf 00-omanywhere-wheel
 }
 
 package() {
-  local unit reason
+  local unit reason dir
   local -r units=usr/lib/systemd/system
 
   install -Dm0755 owner "$pkgdir/usr/lib/omanywhere/owner"
+  install -Dm0755 session "$pkgdir/usr/lib/omanywhere/session"
   install -Dm0644 pre-refresh-pacman "$pkgdir/usr/lib/omanywhere/pre-refresh-pacman"
   install -Dm0644 omanywhere-owner.service "$pkgdir/$units/omanywhere-owner.service"
+  install -Dm0644 omanywhere-session.service "$pkgdir/$units/omanywhere-session.service"
+  install -Dm0644 hyprland.lua "$pkgdir/usr/share/omanywhere/hypr/hyprland.lua"
+  install -Dm0644 polkit.conf "$pkgdir/$units/polkit.service.d/omanywhere.conf"
   install -Dm0644 omanywhere.preset "$pkgdir/usr/lib/systemd/system-preset/80-omanywhere.preset"
   install -Dm0644 omanywhere.tmpfiles "$pkgdir/usr/lib/tmpfiles.d/omanywhere.conf"
   install -Dm0644 10-omanywhere.conf "$pkgdir/etc/ssh/sshd_config.d/10-omanywhere.conf"
@@ -53,7 +61,12 @@ package() {
   while read -r unit reason; do
     [[ -n $unit && $unit != \#* ]] || continue
     [[ -n $reason ]] || { echo "container-units: no reason given for $unit" >&2; return 1; }
-    install -Dm0644 /dev/stdin "$pkgdir/$units/$unit.d/omanywhere-container.conf" <<DROPIN
+    dir=$units
+    if [[ $unit == user/* ]]; then
+      dir=usr/lib/systemd/user
+      unit=${unit#user/}
+    fi
+    install -Dm0644 /dev/stdin "$pkgdir/$dir/$unit.d/omanywhere-container.conf" <<DROPIN
 # Omanywhere: skipped in a container: $reason.
 [Unit]
 ConditionVirtualization=!container

@@ -34,13 +34,27 @@ Not started. The research and the approach are in `notes/` (local, not committed
 
 ## How it should work
 
-- Hyprland runs with `AQ_NO_KMS_REQUIREMENT=1` on a render node only (no card node, no outputs)
-  and creates its own headless output.
+- `omanywhere-session.service` starts Omarchy's Hyprland for the owner under uwsm, in a logind
+  session, in place of sddm. Hyprland needs a DRM card node: aquamarine allocates its buffers
+  through one even with no screen, and nothing reads `AQ_NO_KMS_REQUIREMENT`. With a GPU's card
+  (`--device nvidia.com/gpu=all`, or `/dev/dri`) every connector, the host's displays, is turned
+  off, now and whenever one appears, and Hyprland creates its own headless output. Without a
+  usable card the session is skipped, and the journal and `docker logs` (the container runs
+  with `--tty`, so systemd has a console) say why. The console's login prompt (getty) lands
+  in `docker logs` too, for now.
+- The session refuses a GPU that no display server is DRM master of: Hyprland would take
+  master and turn the host's outputs off. On a host with no display of its own, set
+  `OMANYWHERE_DRM_MASTER=allow` (see `package/omanywhere/session`). The session checks again
+  just before it starts Hyprland, but master can still change hands in the second between
+  that check and Hyprland opening the card; that window can't be closed while Hyprland opens
+  the card itself, and the real fix is upstream (a headless compositor that needs no card).
+- A refused or skipped desktop stays down until the container restarts.
 - gliff-server (already in Omarchy's base packages) captures that output and injects input
   through Wayland, so the container needs no `uinput`, input devices or seat.
 - Access is ssh only (`ssh host gliff-server --stdio`), with keys only and no published ports.
   [Glifftop](https://github.com/cbyrd01/glifftop) or any other gliff client connects.
-- CPU-only hosts still need some DRM device today (for example `vkms`). See `notes/`.
+- CPU-only hosts still need some DRM device today: a `vkms` card the host loads, whose
+  connector is then the desktop's monitor. See `notes/`.
 
 ## Development
 
@@ -50,14 +64,21 @@ Everything runs in containers; the host needs only Docker and `make`.
 make hooks   # once per clone: gitleaks scans each commit's staged changes
 make lint    # shellcheck + gitleaks over the full history (what CI runs)
 make image   # cosign-verify the Arch base, then build omanywhere:dev (image/Containerfile)
-make test-boot  # boot the image under systemd with no privilege and check it (tests/boot.sh)
-make test-owner # the owner account, ssh, and recreating over the same volumes (tests/owner.sh)
-make test       # both
+make test-boot    # boot the image under systemd with no privilege and check it (tests/boot.sh)
+make test-owner   # the owner account, ssh, and recreating over the same volumes (tests/owner.sh)
+make test-session-logic # the session's card, DRM master and monitor-rule decisions, no device
+make test         # these three; the no-card desktop case is in tests/boot.sh
+make test-desktop # the desktop session on a card (tests/desktop.sh): set
+                  # OMANYWHERE_TEST_DEVICES, such as --device nvidia.com/gpu=all
+make test-desktop-vm # the desktop in a KVM guest, never touching the host's display: a GPU
+                     # nobody is master of (refused, then allowed), and a vkms card loaded in
+                     # the guest's kernel (tests/vm/run; needs /dev/kvm and ~30 GB)
 ```
 
 The image adds one package of its own, `omanywhere` (`package/omanywhere/`), built in the
 image's `package` stage. It makes the owner account at boot from `OMANYWHERE_USER`,
-`OMANYWHERE_UID`, `OMANYWHERE_AUTHORIZED_KEYS`, `OMANYWHERE_PASSWORD` and `TZ`, given with
+`OMANYWHERE_UID`, `OMANYWHERE_AUTHORIZED_KEYS`, `OMANYWHERE_PASSWORD`, `TZ` and
+`OMANYWHERE_DRM_MASTER`, given with
 `docker run -e` or as files under `/run/secrets/` (see `package/omanywhere/owner`).
 The keys given to the container are authoritative and set again on every boot (sshd reads them
 from `/run/omanywhere/authorized_keys/`); keys the owner adds to `~/.ssh/authorized_keys`
