@@ -1,0 +1,500 @@
+#!/bin/bash
+# omanywhere: run stock Omarchy as a container desktop, reached with gliff over
+# ssh. See docs/usage.md.
+#
+#   omanywhere up NAME [--gpu auto|none|nvidia|dri] [--key FILE] [--listen ADDR]
+#                      [--drm-master allow]
+#   omanywhere down NAME [--purge [--yes]]
+#   omanywhere ssh-config NAME
+#   omanywhere status NAME
+#
+# NAME's container is omanywhere-NAME, with the named volumes
+# omanywhere-NAME-home (/home) and omanywhere-NAME-state (/var/lib/omanywhere).
+# Its password, keys and settings are kept in OMANYWHERE_CONFIG_DIR/NAME
+# (default ~/.config/omanywhere/NAME, mode 0700). OMANYWHERE_IMAGE is the image
+# (default omanywhere:dev, built by make image); it is never pulled.
+set -euo pipefail
+
+image=${OMANYWHERE_IMAGE:-omanywhere:dev}
+config_root=${OMANYWHERE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/omanywhere}
+# The owner account's default name (OMANYWHERE_USER in the container).
+user=omarchy
+
+# How systemd runs as PID 1 under Docker with no privilege, as README.md
+# gives them: a private cgroup namespace whose own subtree is writable, and
+# tmpfs where systemd expects one. --tty gives systemd a console, so its
+# boot and the desktop's skip or refusal messages reach docker logs (with the
+# console's login prompt). Nothing else: no --privileged, no --cap-add, no
+# host network or cgroups.
+run_flags=(
+  --tty
+  --cgroupns=private
+  --security-opt writable-cgroups=true
+  --tmpfs /run
+  --tmpfs /run/lock
+  --tmpfs /tmp
+)
+
+usage() {
+  cat >&2 <<'EOF'
+usage: omanywhere up NAME [--gpu auto|none|nvidia|dri] [--key FILE] [--listen ADDR] [--drm-master allow]
+       omanywhere down NAME [--purge [--yes]]
+       omanywhere ssh-config NAME
+       omanywhere status NAME
+See docs/usage.md.
+EOF
+  exit 2
+}
+
+say() {
+  echo "omanywhere: $*" >&2
+}
+
+die() {
+  say "$*"
+  exit 1
+}
+
+# set_name NAME: check NAME and set the names derived from it. Lower-case
+# letters, digits and inner hyphens, up to 32 characters, so every derived
+# name is a valid container, volume and hostname, and a path component.
+set_name() {
+  [[ ${1:-} =~ ^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$ ]] ||
+    die "'${1:-}' is not a valid name: use 1 to 32 lower-case letters, digits and inner hyphens"
+  name=$1
+  container=omanywhere-$name
+  home_volume=$container-home
+  state_volume=$container-state
+  config=$config_root/$name
+  settings=$config/settings
+}
+
+# --- Settings kept in $config/settings, one key=value per line: what the
+# first up chose, which later ups reuse.
+listen='' port='' gpu='' drm_master=''
+
+valid_listen() {
+  # An IPv4 or IPv6 address, as docker run -p takes it.
+  [[ $1 =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ || ($1 =~ ^[0-9A-Fa-f:.]+$ && $1 == *:*) ]]
+}
+
+load_settings() {
+  local key value
+  [[ -f $settings ]] || return 1
+  while IFS='=' read -r key value; do
+    case $key in
+      listen) listen=$value ;;
+      port) port=$value ;;
+      gpu) gpu=$value ;;
+      drm_master) drm_master=$value ;;
+    esac
+  done <"$settings"
+  [[ -z $listen ]] || valid_listen "$listen" || die "$settings: listen '$listen' is not an address"
+  [[ -z $port || $port =~ ^[1-9][0-9]{0,4}$ ]] || die "$settings: port '$port' is not a port"
+  [[ -z $gpu || $gpu =~ ^(auto|none|nvidia|dri)$ ]] || die "$settings: gpu '$gpu' is not auto, none, nvidia or dri"
+  [[ -z $drm_master || $drm_master == allow ]] || die "$settings: drm_master '$drm_master' is not allow (or empty)"
+}
+
+save_settings() {
+  printf '%s\n' "listen=$listen" "port=$port" "gpu=$gpu" "drm_master=$drm_master" >"$settings.new"
+  mv "$settings.new" "$settings"
+}
+
+# --- Docker.
+
+container_state() {
+  local state
+  # A missing container prints an empty line as well as the error.
+  if state=$(docker container inspect -f '{{.State.Status}}' "$container" 2>/dev/null); then
+    echo "$state"
+  else
+    echo absent
+  fi
+}
+
+# cexec CMD...: CMD as root in the container.
+cexec() {
+  docker exec "$container" "$@"
+}
+
+# cdi_gpu: Docker sees NVIDIA's CDI device nvidia.com/gpu=all (it lists the
+# devices it discovered from the CDI spec directories, /etc/cdi and
+# /var/run/cdi, without root).
+cdi_gpu() {
+  docker info --format '{{range .DiscoveredDevices}}{{.ID}}{{"\n"}}{{end}}' 2>/dev/null |
+    grep -qx 'nvidia.com/gpu=all'
+}
+
+# gpu_args MODE: set devices (docker run arguments) and gpu_note for --gpu MODE.
+gpu_args() {
+  local cards
+  devices=()
+  cards=$(compgen -G '/dev/dri/card*' || true)
+  case $1 in
+    none) gpu_note="no device: the desktop will be skipped (it needs a DRM card)" ;;
+    nvidia)
+      cdi_gpu || die "--gpu nvidia: Docker sees no CDI device nvidia.com/gpu=all (install nvidia-container-toolkit; see docs/usage.md)"
+      devices=(--device nvidia.com/gpu=all)
+      gpu_note="NVIDIA GPU through CDI (nvidia.com/gpu=all)"
+      ;;
+    dri)
+      [[ -n $cards ]] || die "--gpu dri: this host has no /dev/dri/card*"
+      devices=(--device /dev/dri)
+      gpu_note="/dev/dri ($(echo "$cards" | paste -sd ' '))"
+      ;;
+    auto)
+      if cdi_gpu; then
+        gpu_args nvidia
+      elif [[ -n $cards ]]; then
+        gpu_args dri
+      else
+        devices=()
+        gpu_note="no device: no CDI GPU and no /dev/dri/card* on this host, so the desktop will be skipped (it needs a DRM card: a GPU, or vkms on a CPU-only host; see docs/usage.md)"
+      fi
+      ;;
+  esac
+}
+
+# free_port: a TCP port nothing on this host listens on, from 20000-32767
+# (below Linux's default ephemeral range, which outgoing connections use).
+free_port() {
+  local candidate busy
+  busy=$(ss -Hltn 2>/dev/null | awk '{ n = split($4, a, ":"); print a[n] }') || busy=
+  for _ in {1..50}; do
+    candidate=$((20000 + RANDOM % 12768))
+    grep -qx "$candidate" <<<"$busy" || {
+      echo "$candidate"
+      return
+    }
+  done
+  die "found no free port for ssh"
+}
+
+# --- Secrets. The password is made here and only ever written to a file:
+# never an argument, the container's environment, or the terminal.
+
+make_password() {
+  [[ -s $config/password ]] && return
+  # 24 random bytes (192 bits) in base64, less any / and +: about 30 characters.
+  (umask 077 && head -c 24 /dev/urandom | base64 | tr -d '\n/+=' >"$config/password")
+  [[ -s $config/password ]] || die "could not make a password in $config/password"
+}
+
+# has_key TEXT: TEXT has a line that isn't blank or a comment. The
+# container's owner unit checks that each such line is a public key (and
+# fails, which up reports, if one isn't); this only makes sure there is one.
+has_key() {
+  grep -Eqv '^[[:space:]]*(#|$)' <<<"$1"
+}
+
+# new_keys KEYFILE: print the keys up should give the container: --key
+# KEYFILE's, else nothing if keys kept from an earlier up stay, else the ssh
+# agent's. Fails, saying so, when there is none.
+new_keys() {
+  local keyfile=$1 keys
+  if [[ -n $keyfile ]]; then
+    [[ -r $keyfile ]] || die "--key $keyfile: can't read it"
+    keys=$(<"$keyfile")
+    has_key "$keys" || die "no ssh key in $keyfile: it has no public key line"
+  elif [[ -f $config/authorized_keys ]] && has_key "$(<"$config/authorized_keys")"; then
+    return
+  # A locked agent (1Password's, say) can wait for approval: don't wait long.
+  elif keys=$(timeout 10 ssh-add -L 2>/dev/null) && has_key "$keys"; then
+    say "using the keys in your ssh agent (ssh-add -L)"
+  else
+    die "no ssh key: pass --key FILE (a public key, such as ~/.ssh/id_ed25519.pub), or add a key to your ssh agent (ssh-add -L lists none). ssh is the only way in."
+  fi
+  printf '%s\n' "$keys"
+}
+
+# write_keys KEYS: KEYS (if any) to $config/authorized_keys. Rewritten in
+# place: an existing container has the file bind-mounted, and a new file (a
+# rename) wouldn't reach it.
+write_keys() {
+  [[ -z $1 ]] || (umask 077 && printf '%s\n' "$1" >"$config/authorized_keys")
+}
+
+# --- Waiting for, and reporting on, the container's systemd.
+
+# wait_booted TIMEOUT: wait until systemd has finished booting (running or
+# degraded, or anything but starting); print its state.
+wait_booted() {
+  local deadline=$((SECONDS + $1)) state=
+  while ((SECONDS < deadline)); do
+    [[ $(container_state) == running ]] || {
+      say "the container stopped while it booted; its last output:"
+      docker logs --tail 30 "$container" >&2 || true
+      return 1
+    }
+    # --wait blocks until the boot is done, but needs systemd's bus, which
+    # isn't up the moment the container starts.
+    state=$(timeout $((deadline - SECONDS + 1)) docker exec "$container" systemctl is-system-running --wait 2>/dev/null) || true
+    [[ -n $state && $state != offline && $state != unknown && $state != starting ]] && {
+      echo "$state"
+      return
+    }
+    sleep 0.5
+  done
+  say "systemd did not finish booting in $1 s (last state: ${state:-none})"
+  return 1
+}
+
+# wait_settled TIMEOUT: wait until systemd's job queue has stayed empty for
+# 2 s: the desktop session may restart once or twice after the boot.
+wait_settled() {
+  # shellcheck disable=SC2016 # the script runs, and expands, in the container
+  cexec timeout "$1" bash -c '
+    quiet=0
+    while ((quiet < 4)); do
+      if [[ -z $(systemctl list-jobs --no-legend) ]]; then ((++quiet)); else quiet=0; fi
+      sleep 0.5
+    done' >/dev/null 2>&1
+}
+
+# unit_state UNIT: "ActiveState Result".
+unit_state() {
+  cexec systemctl show -P ActiveState,Result "$1" 2>/dev/null | paste -sd ' '
+}
+
+# session_said: the desktop session's last message this boot.
+session_said() {
+  cexec journalctl -b -u omanywhere-session.service -o cat --no-pager 2>/dev/null |
+    grep '^omanywhere-session: ' | tail -n 1 | sed 's/^omanywhere-session: //'
+}
+
+# owner_line: the owner unit, for status; with the owner's name when it's up.
+owner_line() {
+  local state
+  state=$(unit_state omanywhere-owner.service)
+  case $state in
+    "active success") echo "active ($(cexec cat /run/omanywhere/owner 2>/dev/null || echo "?"))" ;;
+    *) echo "${state:-unknown}" ;;
+  esac
+}
+
+# desktop_line: the desktop session, for status: running (on which card),
+# skipped (with the session's reason: no card, or a refused DRM master),
+# or another state with its last message.
+desktop_line() {
+  local state card
+  state=$(unit_state omanywhere-session.service)
+  case $state in
+    "active "*)
+      card=$(cexec cat /run/omanywhere/session.env 2>/dev/null |
+        sed -n 's/^OMANYWHERE_CARD=//p; s/^OMANYWHERE_CARD_KIND=/, /p; s/^OMANYWHERE_CARD_DRIVER=/, /p' | paste -sd '')
+      echo "running on ${card:-?}; $(cexec cat /run/omanywhere/sshd/gliff.conf 2>/dev/null | sed -n 's/^SetEnv //p')"
+      ;;
+    "inactive exec-condition") echo "skipped: $(session_said)" ;;
+    *) echo "${state:-unknown}: $(session_said)" ;;
+  esac
+}
+
+endpoint() {
+  if [[ $listen == *:* ]]; then echo "[$listen]:$port"; else echo "$listen:$port"; fi
+}
+
+# --- Commands.
+
+cmd_up() {
+  local keyfile='' opt_gpu='' opt_listen='' opt_master='' state
+  set_name "${1:-}"
+  shift
+  while (($#)); do
+    case $1 in
+      --gpu)
+        [[ ${2:-} =~ ^(auto|none|nvidia|dri)$ ]] || die "--gpu takes auto, none, nvidia or dri"
+        opt_gpu=$2
+        shift 2
+        ;;
+      --key)
+        [[ -n ${2:-} ]] || die "--key takes a public key file"
+        keyfile=$2
+        shift 2
+        ;;
+      --listen)
+        valid_listen "${2:-}" || die "--listen takes an IPv4 or IPv6 address, such as 127.0.0.1 or a tailnet address"
+        opt_listen=$2
+        shift 2
+        ;;
+      --drm-master)
+        [[ ${2:-} == allow ]] || die "--drm-master takes allow"
+        opt_master=allow
+        shift 2
+        ;;
+      *) usage ;;
+    esac
+  done
+  docker image inspect "$image" >/dev/null 2>&1 || die "image $image not found: build it with make image"
+
+  local keys
+  state=$(container_state)
+  [[ $state == absent || -z $opt_gpu$opt_listen$opt_master ]] ||
+    say "ignoring --gpu, --listen and --drm-master: $container exists, and they apply when it's made (omanywhere down $name, then up)"
+  if [[ $state == running ]]; then
+    if [[ -n $keyfile ]]; then
+      keys=$(new_keys "$keyfile") || exit 1
+      write_keys "$keys"
+      say "wrote the keys to $config/authorized_keys; they apply when $container next starts"
+    fi
+    say "$container is already running"
+    return
+  fi
+
+  # Everything is checked before anything is made: the device, then the keys.
+  load_settings || true
+  if [[ $state == absent ]]; then
+    gpu=${opt_gpu:-${gpu:-auto}}
+    listen=${opt_listen:-${listen:-127.0.0.1}}
+    drm_master=${opt_master:-$drm_master}
+    gpu_args "$gpu"
+  fi
+  keys=$(new_keys "$keyfile") || exit 1
+  (umask 077 && mkdir -p "$config")
+  write_keys "$keys"
+  make_password
+
+  if [[ $state != absent ]]; then
+    say "starting $container ($state)"
+    docker start "$container" >/dev/null
+  else
+    say "making $container from $image: $gpu_note"
+    local env=() bind tries
+    [[ -z $drm_master ]] || env=(-e OMANYWHERE_DRM_MASTER=allow)
+    bind=$listen
+    [[ $listen != *:* ]] || bind="[$listen]"
+    # The port the first up picks is kept, so ssh's address stays the same;
+    # if another program has taken it since, pick again.
+    for tries in 1 2 3 4 5; do
+      [[ -n $port ]] || port=$(free_port)
+      save_settings
+      local out
+      if out=$(docker run -d --pull never --name "$container" --hostname "$name" \
+        "${run_flags[@]}" "${devices[@]}" "${env[@]}" \
+        -p "$bind:$port:22" \
+        -v "$home_volume:/home" -v "$state_volume:/var/lib/omanywhere" \
+        -v "$config/authorized_keys:/run/secrets/authorized_keys:ro" \
+        -v "$config/password:/run/secrets/password:ro" \
+        "$image" 2>&1); then
+        break
+      fi
+      docker rm -f "$container" >/dev/null 2>&1 || true
+      if [[ $out =~ (port is already allocated|address already in use) ]] && ((tries < 5)); then
+        say "port $port is taken; picking another"
+        port=
+        continue
+      fi
+      die "docker run failed: $out"
+    done
+  fi
+
+  say "waiting for systemd in $container"
+  local system
+  system=$(wait_booted 180) || die "$container did not boot; see docker logs $container"
+  wait_settled 60 || say "systemd in $container still has jobs queued after 60 s"
+
+  # No owner, no way in: ssh needs the owner unit. Fail loudly, with its
+  # journal, and leave the container stopped, not running unreachable.
+  if [[ $(unit_state omanywhere-owner.service) != "active success" ]]; then
+    say "the owner unit failed, so there is no way in; its journal:"
+    cexec journalctl -b -u omanywhere-owner.service -o cat --no-pager -n 20 >&2 || true
+    docker stop "$container" >/dev/null || true
+    die "stopped $container. Fix the input (up $name --key FILE for the keys) and run up again, or omanywhere down $name"
+  fi
+  print_status "$system"
+  echo
+  echo "Connect: omanywhere ssh-config $name >>~/.ssh/config, then gliff --headless $container"
+}
+
+cmd_down() {
+  local purge='' yes='' state answer
+  set_name "${1:-}"
+  shift
+  while (($#)); do
+    case $1 in
+      --purge) purge=1 ;;
+      --yes) yes=1 ;;
+      *) usage ;;
+    esac
+    shift
+  done
+  if [[ -n $purge && -z $yes ]]; then
+    local what="$container, the volumes $home_volume and $state_volume (the owner's home and the container's identity), and $config (its password and keys)"
+    [[ -t 0 ]] || die "--purge removes $what; pass --yes to confirm without a terminal"
+    read -r -p "Remove $what? [y/N] " answer
+    [[ $answer =~ ^[Yy]([Ee][Ss])?$ ]] || die "nothing removed"
+  fi
+  state=$(container_state)
+  if [[ $state != absent ]]; then
+    # systemd shuts down on the image's STOPSIGNAL; give it time to.
+    docker stop -t 30 "$container" >/dev/null
+    docker rm "$container" >/dev/null
+    say "removed $container"
+  else
+    say "$container does not exist"
+  fi
+  if [[ -n $purge ]]; then
+    docker volume rm "$home_volume" "$state_volume" >/dev/null 2>&1 || true
+    rm -rf -- "$config"
+    say "removed the volumes $home_volume and $state_volume, and $config"
+  else
+    say "kept the volumes $home_volume and $state_volume, and $config"
+  fi
+}
+
+cmd_ssh_config() {
+  set_name "${1:-}"
+  (($# == 1)) || usage
+  load_settings && [[ -n $port ]] || die "no settings for $name in $config: run omanywhere up $name first"
+  local host=$listen
+  # A wildcard address is reached through any of this host's addresses.
+  [[ $listen != 0.0.0.0 && $listen != :: ]] || host=$(uname -n)
+  cat <<EOF
+# omanywhere $name: add this to ~/.ssh/config, then: gliff --headless $container
+Host $container
+  HostName $host
+  Port $port
+  User $user
+  HostKeyAlias $container
+EOF
+  if [[ $listen == 127.* || $listen == ::1 ]]; then
+    cat <<EOF
+  # It listens on this host's loopback only. From another machine, go
+  # through this host:
+  # ProxyJump $(id -un)@$(uname -n)
+EOF
+  fi
+}
+
+# print_status [SYSTEMD]: the container's state, and when it runs, systemd's,
+# the owner's, the desktop's and ssh's.
+print_status() {
+  local state system=${1:-}
+  state=$(container_state)
+  printf '%-10s %s\n' container "$state"
+  load_settings || true
+  if [[ $state == running ]]; then
+    [[ -n $system ]] || system=$(cexec systemctl is-system-running 2>/dev/null) || true
+    printf '%-10s %s\n' systemd "${system:-unknown}" owner "$(owner_line)" desktop "$(desktop_line)"
+  fi
+  [[ -z $port ]] || printf '%-10s %s\n' ssh "$(endpoint) (Host $container: omanywhere ssh-config $name)"
+}
+
+cmd_status() {
+  set_name "${1:-}"
+  (($# == 1)) || usage
+  print_status
+  [[ $(container_state) != absent ]]
+}
+
+case ${1:-} in
+  up | down | status)
+    cmd=$1
+    shift
+    "cmd_$cmd" "$@"
+    ;;
+  ssh-config)
+    shift
+    cmd_ssh_config "$@"
+    ;;
+  *) usage ;;
+esac

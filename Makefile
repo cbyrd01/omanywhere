@@ -6,7 +6,7 @@ TOOLS = docker run --rm --network none -v "$(CURDIR):$(CURDIR):ro" \
 	-v "$(GIT_COMMON_DIR):$(GIT_COMMON_DIR):ro" -w "$(CURDIR)" $(TOOLS_IMAGE)
 
 .PHONY: lint tools shellcheck secrets secrets-staged hooks verify-base image test test-boot test-owner \
-	test-session-logic test-desktop test-desktop-vm
+	test-session-logic test-cli test-desktop test-desktop-vm test-gliff test-gliff-vm
 
 lint: shellcheck secrets
 
@@ -35,9 +35,9 @@ verify-base: tools
 image: verify-base
 	docker build -f image/Containerfile -t $(IMAGE) .
 
-# The legs that need no device. The desktop's legs need a card or /dev/kvm:
-# test-desktop and test-desktop-vm.
-test: test-session-logic test-boot test-owner
+# The legs that need no device. The desktop's and gliff's legs need a card or
+# /dev/kvm: test-desktop, test-desktop-vm, test-gliff and test-gliff-vm.
+test: test-session-logic test-boot test-owner test-cli
 
 # The desktop session's decisions, with no device (the image's Lua runs the
 # monitor rules).
@@ -50,6 +50,10 @@ test-boot: image
 test-owner: image
 	IMAGE=$(IMAGE) tests/owner.sh
 
+# bin/omanywhere up, status, ssh-config and down, with no device.
+test-cli: image
+	IMAGE=$(IMAGE) tests/cli.sh
+
 # OMANYWHERE_TEST_DEVICES gives the container its DRM card (see
 # tests/desktop.sh), such as --device nvidia.com/gpu=all.
 test-desktop: image
@@ -59,4 +63,14 @@ test-desktop: image
 # master of (refused, then allowed), and the CPU-only leg on vkms, which the
 # guest loads in its own kernel. Needs /dev/kvm and about 30 GB.
 test-desktop-vm: image
-	IMAGE=$(IMAGE) BASE_IMAGE=$(BASE_IMAGE) tests/vm/run
+	OMANYWHERE_VM_LEGS=desktop IMAGE=$(IMAGE) BASE_IMAGE=$(BASE_IMAGE) tests/vm/run
+
+# A plain gliff client over ssh (tests/gliff.sh) on the container's card.
+# OMANYWHERE_TEST_GPU is up's --gpu (auto, nvidia or dri), such as
+# OMANYWHERE_TEST_GPU=auto on a host with NVIDIA's CDI spec.
+test-gliff: image
+	IMAGE=$(IMAGE) tests/gliff.sh
+
+# tests/gliff.sh in the KVM guest, on vkms: the CPU-only leg.
+test-gliff-vm: image
+	OMANYWHERE_VM_LEGS=gliff IMAGE=$(IMAGE) BASE_IMAGE=$(BASE_IMAGE) tests/vm/run

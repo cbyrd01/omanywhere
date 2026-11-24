@@ -1,4 +1,5 @@
-# The guest's shares from tests/vm/run: tests/ read-only, and the run's
-# directory (the image under test, and out/ for the results).
-tests /tests 9p trans=virtio,version=9p2000.L,ro,x-systemd.after=systemd-modules-load.service 0 0
+# The guest's shares from tests/vm/run: the repository read-only (the tests
+# and bin/omanywhere, which tests/gliff.sh drives), and the run's directory
+# (the image under test, and out/ for the results).
+repo /repo 9p trans=virtio,version=9p2000.L,ro,x-systemd.after=systemd-modules-load.service 0 0
 vm /vm 9p trans=virtio,version=9p2000.L,msize=1048576,x-systemd.after=systemd-modules-load.service 0 0

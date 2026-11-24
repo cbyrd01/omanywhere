@@ -13,7 +13,8 @@ IMAGE=${IMAGE:-omanywhere:dev}
 # interface asks: without one, systemd sends its own output and the units'
 # console output to /dev/null, and docker logs is empty. With it, docker logs
 # shows the boot and the desktop session's skip or refusal messages (and the
-# stock console getty's login prompt, which Task 5 deals with).
+# stock console getty's login prompt; docs/usage.md says why that's harmless).
+# bin/omanywhere uses the same flags (its run_flags).
 RUN_FLAGS=(
   --tty
   --cgroupns=private
@@ -30,6 +31,11 @@ fail() {
 
 pass() {
   echo "ok: $*"
+}
+
+# indent: copy standard input to standard output, each line set off with "  | ".
+indent() {
+  sed 's/^/  | /'
 }
 
 check_name() {
