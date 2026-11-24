@@ -1,7 +1,13 @@
 #!/bin/bash
-# Runs in the KVM guest (tests/vm/run): load vkms in the guest's own kernel,
-# load the image under test into the guest's Docker, and run
-# tests/desktop.sh with the vkms card. Output goes to /vm/out.
+# Runs in the KVM guest (tests/vm/run): load the image under test into the
+# guest's Docker and run tests/desktop.sh's guest legs, all in the guest's
+# own kernel. Output goes to /vm/out.
+#   1. QEMU's bochs-display, a GPU no display server is DRM master of: the
+#      session refuses it (its master would blank a host's outputs).
+#   2. The same with OMANYWHERE_DRM_MASTER=allow: the session takes it, and
+#      still turns its connector off for a headless output.
+#   3. vkms, the CPU-only leg, after the GPU is unbound: both name their
+#      connector Virtual-1, and the safety check can't tell them apart.
 set -euo pipefail
 
 out=/vm/out
@@ -9,18 +15,53 @@ mkdir -p "$out"
 exec >"$out/guest.log" 2>&1
 trap 'echo $? >"$out/status"' EXIT
 
+# card DRIVER: the guest's /dev/dri node of the card DRIVER drives, or whose
+# device is named DRIVER (vkms, a faux device).
+card() {
+  local sys
+  for sys in /sys/class/drm/card*; do
+    [[ $sys =~ /card[0-9]+$ ]] || continue
+    if [[ $(basename "$(readlink -f "$sys/device/driver")") == "$1" ||
+      $(basename "$(readlink -f "$sys/device")") == "$1" ]]; then
+      echo "/dev/dri/$(basename "$sys")"
+      return
+    fi
+  done
+  echo "guest: no $1 card" >&2
+  return 1
+}
+
+# leg NAME VARIABLE=VALUE...: tests/desktop.sh with these variables.
+leg() {
+  local name=$1
+  shift
+  echo "=== $name"
+  env IMAGE="$image" "$@" /tests/desktop.sh
+}
+
 echo "guest: $(uname -r), $(nproc) CPUs, $(free -g | awk '/^Mem:/ { print $2 }') GiB"
-modprobe vkms
-ls -l /dev/dri
-for card in /sys/class/drm/card*; do
-  echo "$card -> $(readlink -f "$card/device")"
-done
 
 image=$(cat /vm/image.name)
-if [[ $(docker image inspect -f '{{.Id}}' "$image" 2>/dev/null) != "$(cat /vm/image.id)" ]]; then
-  echo "loading $image"
-  docker load -i /vm/image.tar
-fi
-docker image inspect -f '{{.Id}}' "$image"
+# Loaded afresh on every boot: an image loaded in an earlier boot came back
+# with files cut to zero bytes (seen 2026-11-23 on Omarchy's
+# install/helpers/image-target.sh, after a clean power-off), so the guest
+# keeps none across boots.
+docker system prune -af >/dev/null
+echo "loading $image"
+docker load -q -i "/vm/image-$(cat /vm/image.key).tar"
 
-IMAGE=$image OMANYWHERE_TEST_DEVICES="--device /dev/dri/card0" /tests/desktop.sh 2>&1 | tee "$out/desktop.log"
+for sys in /sys/class/drm/card*; do
+  echo "$sys: $(readlink -f "$sys/device") $(basename "$(readlink -f "$sys/device/driver")")"
+done
+gpu=$(card bochs-drm)
+leg "bochs-display, no DRM master: refused" OMANYWHERE_TEST_DEVICES="--device $gpu" \
+  OMANYWHERE_TEST_EXPECT_SKIP="no display server holds DRM master on $gpu; refusing to take it"
+leg "bochs-display, no DRM master, OMANYWHERE_DRM_MASTER=allow" \
+  OMANYWHERE_TEST_DEVICES="--device $gpu -e OMANYWHERE_DRM_MASTER=allow"
+
+# Unbind the GPU (in the guest's kernel), so only vkms has connectors.
+device=$(readlink -f "/sys/class/drm/${gpu#/dev/dri/}/device")
+basename "$device" >"$(readlink -f "$device/driver")/unbind"
+modprobe vkms
+ls -l /dev/dri
+leg "vkms, the CPU-only leg" OMANYWHERE_TEST_DEVICES="--device $(card vkms)"

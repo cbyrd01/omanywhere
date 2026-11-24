@@ -1,8 +1,10 @@
 #!/bin/bash
-# Runs tests/desktop.sh's CPU-only leg in a KVM guest: the guest loads vkms
-# in its own kernel and runs the image under test in its own Docker with the
-# vkms card, so the host's display is never touched. QEMU runs in a container
-# with only /dev/kvm, as the calling user.
+# Runs tests/desktop.sh's guest legs (tests/vm/guest) in a KVM guest: a GPU
+# no display server is master of (QEMU's bochs-display), refused and then
+# allowed, and the CPU-only leg on vkms, which the guest loads in its own
+# kernel. The image under test runs in the guest's own Docker, so the host's
+# display is never touched. QEMU runs in a container with only /dev/kvm, as
+# the calling user.
 #
 # Usage: tests/vm/run (IMAGE defaults to omanywhere:dev; BASE_IMAGE is
 # image/Containerfile's verified base, which `make test-desktop-vm` passes).
@@ -27,32 +29,54 @@ docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "image $IMAGE not found (r
 mkdir -p "$dir"
 
 docker build -q --build-arg BASE_IMAGE="$BASE_IMAGE" -f "$here/Containerfile" -t "$vm_image" "$here" >/dev/null
-vm_id=$(docker image inspect -f '{{.Id}}' "$vm_image")
 
-# The guest's disk: the guest image's root as an ext4 file system, made again
-# when the guest image changes.
-if [[ ! -f $dir/root.img || $(cat "$dir/root.id" 2>/dev/null) != "$vm_id" ]]; then
-  echo "making the guest disk in $dir"
-  rm -f "$dir/root.img" "$dir/root.id"
+# image_key IMAGE: a key for the image's content, its layers and config. Not
+# its id: BuildKit's provenance attestation gives every build, even a fully
+# cached one, a new id. tests/vm/guest computes the same key.
+image_key() {
+  docker image inspect -f '{{json .RootFS.Layers}}{{json .Config}}' "$1" | sha256sum | cut -c1-64
+}
+
+# Files kept per key: a new guest image or image under test replaces the old.
+# prune PATTERN KEEP: remove the files in $dir matching PATTERN but KEEP.
+prune() {
+  local file
+  for file in "$dir"/$1; do
+    [[ -e $file && $file != "$dir/$2" ]] || continue
+    echo "removing $file"
+    rm -f "$file"
+  done
+}
+
+# The guest's disk: the guest image's root as an ext4 file system, with its
+# kernel and initramfs, made for each guest image.
+root=root-$(image_key "$vm_image").img
+prune 'root-*.img' "$root"
+if [[ ! -f $dir/$root ]]; then
+  echo "making the guest disk $dir/$root"
   docker create --name "$name" "$vm_image" true >/dev/null
   # shellcheck disable=SC2016 # the script runs, and expands, in the container
   docker export "$name" | docker run --rm -i --network none -v "$dir:/out" "$vm_image" bash -c '
     set -euo pipefail
     mkdir /r && tar -x -C /r
     cp /r/boot/vmlinuz-vm /out/vmlinuz && cp /r/boot/initramfs-vm.img /out/initramfs.img
-    mke2fs -q -t ext4 -d /r -L root /out/root.img 40G
-    chown "$1" /out/vmlinuz /out/initramfs.img /out/root.img' bash "$(id -u):$(id -g)"
+    mke2fs -q -t ext4 -d /r -L root "/out/$2.tmp" 40G
+    mv "/out/$2.tmp" "/out/$2"
+    chown "$1" /out/vmlinuz /out/initramfs.img "/out/$2"' bash "$(id -u):$(id -g)" "$root"
   docker rm "$name" >/dev/null
-  echo "$vm_id" >"$dir/root.id"
 fi
 
-# The image under test, saved once per image id for the guest to load.
-image_id=$(docker image inspect -f '{{.Id}}' "$IMAGE")
-if [[ ! -f $dir/image.tar || $(cat "$dir/image.id" 2>/dev/null) != "$image_id" ]]; then
-  echo "saving $IMAGE to $dir/image.tar"
-  docker save -o "$dir/image.tar" "$IMAGE"
-  echo "$image_id" >"$dir/image.id"
+# The image under test, saved for each key for the guest to load
+# (tests/vm/guest finds it by the key, and loads it on every boot).
+key=$(image_key "$IMAGE")
+tar=image-$key.tar
+prune 'image-*.tar' "$tar"
+if [[ ! -f $dir/$tar ]]; then
+  echo "saving $IMAGE to $dir/$tar"
+  docker save -o "$dir/$tar.tmp" "$IMAGE"
+  mv "$dir/$tar.tmp" "$dir/$tar"
 fi
+echo "$key" >"$dir/image.key"
 echo "$IMAGE" >"$dir/image.name"
 rm -rf "$dir/out"
 mkdir "$dir/out"
@@ -66,11 +90,12 @@ docker run --rm --name "$name" --network none --user "$(id -u):$(id -g)" \
   -serial file:/vm/console.log \
   -kernel /vm/vmlinuz -initrd /vm/initramfs.img \
   -append 'root=/dev/vda rw console=ttyS0' \
-  -drive file=/vm/root.img,format=raw,if=virtio \
+  -drive "file=/vm/$root,format=raw,if=virtio" \
+  -device bochs-display \
   -virtfs local,path=/tests,mount_tag=tests,security_model=none,readonly=on \
   -virtfs local,path=/vm,mount_tag=vm,security_model=none
 
 cat "$dir/out/guest.log" 2>/dev/null || fail "the guest wrote no log (console: $dir/console.log)"
 status=$(cat "$dir/out/status" 2>/dev/null) || fail "the guest did not finish the test"
 ((status == 0)) || fail "the desktop test failed in the guest (exit $status)"
-echo "vm desktop test passed"
+echo "vm desktop tests passed"

@@ -5,16 +5,22 @@
 #
 # Usage: tests/desktop.sh (IMAGE defaults to omanywhere:dev).
 #
-# OMANYWHERE_TEST_DEVICES holds extra docker run arguments, split on
-# whitespace, that give the container its DRM card, so one test covers every
-# leg:
-#   (unset)                    no device: the session is skipped, and says why
-#   --device /dev/dri/card0    a vkms card, the CPU-only leg (run in a KVM
-#                              guest by tests/vm/run, never on a desktop host)
+# OMANYWHERE_TEST_DEVICES (required) holds extra docker run arguments, split
+# on whitespace, that give the container its DRM card, so one test covers
+# every leg:
 #   --device nvidia.com/gpu=all  an NVIDIA GPU through CDI (the host needs
 #                              nvidia-container-toolkit and its spec in
 #                              /var/run/cdi); safe on a desktop host, whose
+#                              display server holds DRM master and whose
 #                              displays the test checks are never turned on
+#   --device /dev/dri/cardN    in a KVM guest (tests/vm/guest), never on a
+#                              desktop host: a vkms card, the CPU-only leg, or
+#                              QEMU's bochs-display, a GPU nobody is master of
+#                              (with -e OMANYWHERE_DRM_MASTER=allow to take it)
+# The leg with no device is tests/boot.sh's.
+#
+# OMANYWHERE_TEST_EXPECT_SKIP, when set, is part of the line the session must
+# skip with: the test checks that it was skipped and said so, and stops.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -28,6 +34,7 @@ trap 'cleanup "$name"; rm -rf "$tmp"' EXIT
 docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "image $IMAGE not found (run make image)"
 
 read -ra devices <<<"${OMANYWHERE_TEST_DEVICES:-}"
+((${#devices[@]})) || fail "OMANYWHERE_TEST_DEVICES is not set: give the container a DRM card (the no-device leg is tests/boot.sh)"
 user=omarchy
 uid=1000
 
@@ -35,20 +42,6 @@ uid=1000
 # runtime directory, where Hyprland's and Wayland's sockets are.
 as_owner() {
   cexec "$name" runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$uid" "$@"
-}
-
-# allowed_check KIND FAILED LIST: every unit in FAILED must be in LIST (one per
-# line, each with a reason as a comment).
-allowed_check() {
-  local kind=$1 failed=$2 list=$3 allowed unexpected
-  allowed=$(sed -e 's/[[:space:]]*#.*$//' -e '/^[[:space:]]*$/d' "$list" | sort)
-  unexpected=$(comm -13 <(echo "$allowed") <(echo "$failed" | sort) | sed '/^$/d')
-  [[ -z $unexpected ]] || fail "$kind units failed that $(basename "$list") does not allow: ${unexpected//$'\n'/ }"
-  if [[ -n $failed ]]; then
-    pass "failed $kind units are all allowed: ${failed//$'\n'/ }"
-  else
-    pass "no failed $kind units"
-  fi
 }
 
 # physical_connectors: the connectors, as Hyprland names them, of every DRM
@@ -85,11 +78,12 @@ hypr_json() {
 # check_no_physical WHEN: Hyprland's enabled monitors include no physical
 # connector.
 check_no_physical() {
-  local monitors enabled_physical
+  local monitors physical enabled_physical
   monitors=$(hypr_json monitors '.[].name') || fail "hyprctl -j monitors failed ($1)"
-  enabled_physical=$(comm -12 <(sort <<<"$monitors") <(physical_connectors | sort) | sed '/^$/d')
+  physical=$(physical_connectors | sort)
+  enabled_physical=$(comm -12 <(sort <<<"$monitors") <(echo "$physical") | sed '/^$/d')
   [[ -z $enabled_physical ]] || fail "SAFETY: the container's Hyprland enabled a physical connector: ${enabled_physical//$'\n'/ }"
-  pass "$1: no physical connector enabled (monitors: ${monitors//$'\n'/ }; physical, all off: $(physical_connectors | paste -sd ' '))"
+  pass "$1: no physical connector enabled (monitors: ${monitors//$'\n'/ }; physical, all off: ${physical//$'\n'/ })"
 }
 
 test_key "$tmp"
@@ -98,25 +92,21 @@ wait_running "$name" 120 >/dev/null || fail "systemd did not finish booting"
 wait_settled "$name" 60 || fail "systemd still had jobs queued 60 s after boot"
 cexec "$name" systemctl is-active --quiet omanywhere-owner.service || fail "omanywhere-owner.service is not active"
 
-# Omarchy's display manager has no place here: the session unit replaces it.
-[[ $(cexec "$name" systemctl show -P ConditionResult sddm.service) == no ]] ||
-  fail "sddm.service was not skipped by its container condition"
-pass "sddm.service skipped in the container"
-
 cards=$(cexec "$name" bash -c 'shopt -s nullglob; echo /dev/dri/card*')
+[[ -n $cards ]] || fail "no DRM card in the container with: ${devices[*]}"
 
-# --- No DRM card: the session is skipped, not failed, and the journal says
-# which device is missing.
-if [[ -z $cards ]]; then
+# --- A skip the leg expects: skipped, not failed, and said in the journal and
+# in docker logs.
+if [[ -n ${OMANYWHERE_TEST_EXPECT_SKIP:-} ]]; then
   session=$(cexec "$name" systemctl show -P ActiveState,Result omanywhere-session.service | paste -sd ' ')
   [[ $session == "inactive exec-condition" ]] ||
-    fail "with no DRM card, omanywhere-session.service is '$session', not 'inactive exec-condition'"
-  log=$(cexec "$name" journalctl -b -u omanywhere-session.service --no-pager)
-  grep -qF 'no DRM card (/dev/dri/card*) in the container' <<<"$log" ||
-    fail "the journal does not name the missing DRM card: $log"
-  pass "no DRM card: omanywhere-session.service skipped; journal: $(grep -oF 'no DRM card' <<<"$log" | head -1) …"
-  allowed_check system "$(failed_units "$name")" "$here/allowed-failed.txt"
-  echo "desktop test passed (no device)"
+    fail "omanywhere-session.service is '$session', not 'inactive exec-condition' (skipped)"
+  cexec "$name" journalctl -b -u omanywhere-session.service --no-pager | grep -qF "$OMANYWHERE_TEST_EXPECT_SKIP" ||
+    fail "the journal does not say: $OMANYWHERE_TEST_EXPECT_SKIP"
+  docker logs "$name" 2>&1 | grep -qF "$OMANYWHERE_TEST_EXPECT_SKIP" || fail "docker logs does not say: $OMANYWHERE_TEST_EXPECT_SKIP"
+  pass "omanywhere-session.service skipped on $cards, and the journal and docker logs say: $OMANYWHERE_TEST_EXPECT_SKIP"
+  check_failed "$name" "$here/allowed-failed.txt"
+  echo "desktop test passed ($cards: skipped as expected)"
   exit 0
 fi
 pass "DRM card(s) in the container: $cards"
@@ -141,6 +131,8 @@ done
 if ((count == 0)); then
   cexec "$name" systemctl status --no-pager --lines 30 omanywhere-session.service >&2 || true
   cexec "$name" journalctl -b --no-pager -n 60 _UID="$uid" >&2 || true
+  echo "--- Hyprland's output" >&2
+  cexec "$name" journalctl -b --no-pager -n 80 _UID="$uid" SYSLOG_IDENTIFIER=uwsm_hyprland.desktop >&2 || true
   fail "hyprctl -j monitors listed no monitor as $user within 60 s"
 fi
 pass "hyprctl -j monitors as $user: $count monitor(s) after $((i / 2)) s"
@@ -167,9 +159,22 @@ size=$(cexec "$name" magick /tmp/s.png -format '%wx%h' info:)
 pass "grim: a ${size} PNG with $colours colours"
 
 # Reloading keeps the container's monitor rules: the physical connectors stay
-# off, and the desktop keeps a monitor.
-hyprctl reload >/dev/null || fail "hyprctl reload failed"
-sleep 2
+# off, and the desktop keeps a monitor. Hyprland reloads after hyprctl
+# returns, and says so on its event socket: wait for that, up to 10 s.
+# shellcheck disable=SC2016 # the script runs, and expands, in the container
+as_owner python3 -I -c '
+import glob, os, socket, subprocess, sys
+events = socket.socket(socket.AF_UNIX)
+events.connect(glob.glob(os.environ["XDG_RUNTIME_DIR"] + "/hypr/*/.socket2.sock")[0])
+events.settimeout(10)
+subprocess.run(["hyprctl", "--instance", "0", "reload"], check=True, stdout=subprocess.DEVNULL)
+seen = b""
+while b"configreloaded>>" not in seen:
+    data = events.recv(4096)
+    if not data:
+        sys.exit("the event socket closed")
+    seen += data
+' || fail "hyprctl reload failed, or Hyprland did not report the reload in 10 s"
 count=$(hypr_json monitors length)
 ((count > 0)) || fail "no monitor after hyprctl reload"
 check_no_physical "after hyprctl reload"
@@ -177,13 +182,15 @@ errors=$(hypr_json configerrors '.[]' | sed '/^$/d') || fail "hyprctl -j confige
 [[ -z $errors ]] || fail "Hyprland reports config errors: $errors"
 pass "hyprctl reload: $count monitor(s), no config errors"
 
-# The owner's user manager has no failed unit beyond the allowed ones, nor
-# has the system.
+# The owner's user manager has no failed unit (package/omanywhere/
+# container-units skips the user units that can't work here), and the system
+# none beyond the allowed ones.
 cexec "$name" timeout 60 bash -c "until [[ -z \$(systemctl --user -M $user@ list-jobs --no-legend 2>/dev/null) ]]; do sleep 1; done" || true
 failed=$(cexec "$name" systemctl --user -M "$user@" list-units --all --plain --no-legend --full --state=failed,auto-restart |
   awk '{ print $1 }')
-allowed_check user "$failed" "$here/allowed-failed-user.txt"
-allowed_check system "$(failed_units "$name")" "$here/allowed-failed.txt"
+[[ -z $failed ]] || fail "user units of $user failed: ${failed//$'\n'/ }"
+pass "no failed user units"
+check_failed "$name" "$here/allowed-failed.txt"
 check_no_physical "at the end"
 
 # The desktop shuts down cleanly with the container, before docker's SIGKILL.

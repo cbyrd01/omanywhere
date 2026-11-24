@@ -28,7 +28,7 @@ source=(
   session
   omanywhere-session.service
   hyprland.lua
-  environment.conf
+  polkit.conf
 )
 # Local files in this repository, which git already pins.
 sha256sums=(SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP)
@@ -47,7 +47,7 @@ package() {
   install -Dm0644 omanywhere-owner.service "$pkgdir/$units/omanywhere-owner.service"
   install -Dm0644 omanywhere-session.service "$pkgdir/$units/omanywhere-session.service"
   install -Dm0644 hyprland.lua "$pkgdir/usr/share/omanywhere/hypr/hyprland.lua"
-  install -Dm0644 environment.conf "$pkgdir/usr/lib/environment.d/60-omanywhere.conf"
+  install -Dm0644 polkit.conf "$pkgdir/$units/polkit.service.d/omanywhere.conf"
   install -Dm0644 omanywhere.preset "$pkgdir/usr/lib/systemd/system-preset/80-omanywhere.preset"
   install -Dm0644 omanywhere.tmpfiles "$pkgdir/usr/lib/tmpfiles.d/omanywhere.conf"
   install -Dm0644 10-omanywhere.conf "$pkgdir/etc/ssh/sshd_config.d/10-omanywhere.conf"
