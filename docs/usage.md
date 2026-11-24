@@ -23,7 +23,7 @@ container  running
 systemd    running
 owner      active (omarchy)
 desktop    running on /dev/dri/card1, gpu, nvidia; GLIFF_VIDEO=gpu GLIFF_CAPTURE=auto
-ssh        127.0.0.1:24816 (Host omanywhere-desk: omanywhere ssh-config desk)
+ssh        127.0.0.1:32768 (Host omanywhere-desk: omanywhere ssh-config desk)
 ```
 
 `gliff --headless omanywhere-desk` opens a private screen on that desktop, sized to your
@@ -69,29 +69,31 @@ new keys take effect at the container's next start. Without `--key`, the keys fr
 
 ### What `up` makes
 
-`up` runs the container with the flags in the README and nothing more:
-
-- `--tty`, `--cgroupns=private`, `--security-opt writable-cgroups=true`;
-- tmpfs on `/run`, `/run/lock` and `/tmp`;
-- the two named volumes;
-- the device (or none);
-- `-p ADDR:PORT:22` for ssh.
-
-It never uses `--privileged`, `--cap-add`, or the host's network or cgroups.
+`up` runs the container with [the run flags](#the-run-flags) and the options for each
+container listed there, and nothing more.
 
 On the first `up`, the config directory gets these files:
 
 - `password`, mode 0600: a random password for the owner's sudo and lock screen. It's mounted
-  read-only at `/run/secrets/password`. It never appears in a command line or in the
-  container's environment. Read it with `cat ~/.config/omanywhere/NAME/password`.
+  read-only at `/run/secrets/password`, which only root in the container can read. It never
+  appears in a command line or in the container's environment. Read it with
+  `cat ~/.config/omanywhere/NAME/password`.
 - `authorized_keys`, mounted read-only at `/run/secrets/authorized_keys`.
-- `settings`: the listen address, the port, `--gpu` and `--drm-master`. The port is a free one
-  between 20000 and 32767, picked on the first `up` and kept after that.
+- `settings`: the listen address, the port, `--gpu` and `--drm-master`.
 
-If the owner account can't be made, `up` fails and prints the owner unit's journal. A key line
-that isn't a key causes this, for example. There would be no way in, so `up` stops the
-container rather than leave it running. Fix the input, such as with `up NAME --key FILE`, and
-run `up` again.
+On the first `up`, Docker picks a free port for ssh, and `up` keeps it after that, so the
+`ssh-config` block stays right. If another program has taken that port by a later `up`, `up`
+fails and says so rather than move ssh to another port. Free the port, or delete the `port`
+line in `settings` to take a new one, and then print the `ssh-config` block again.
+
+If the owner account can't be made, or sshd isn't running after the boot, `up` fails and
+prints that unit's journal. A key line that isn't a key causes this, for example. There would
+be no way in, so `up` stops the container rather than leave it running. It does the same if
+systemd doesn't finish booting in 3 minutes. Fix the input, such as with `up NAME --key FILE`,
+and run `up` again.
+
+`down --purge` stops if Docker can't remove a volume, such as one another container uses. It
+names the volume and keeps the config directory, which holds that volume's password.
 
 ### No restart policy
 
@@ -105,7 +107,31 @@ after a reboot. Run `up NAME` to start one again. There are two reasons:
   doesn't restart a container whose desktop was refused, because the container itself is
   still running.
 
-## `--tty` and `docker logs`
+## The run flags
+
+Every container gets these flags, from `lib/run-flags.bash`. The tests use the same file.
+
+| Flag | Why |
+|---|---|
+| `--cgroupns=private`, `--security-opt writable-cgroups=true` | systemd runs as PID 1 with no privilege, in a private cgroup namespace whose own subtree is writable. |
+| `--tmpfs /run`, `--tmpfs /run/lock`, `--tmpfs /tmp` | systemd expects a tmpfs at each of these. |
+| `--tmpfs /run/secrets:mode=0700` | The password and keys are bind-mounted inside this root-only directory. The files belong to your host user, whose uid is usually the owner's (1000), so the directory is what keeps the owner's programs from reading the sudo password. |
+| `--tty` | It gives systemd a console. See [below](#--tty-and-docker-logs). |
+
+`up` also passes these for each container:
+
+- `--name omanywhere-NAME`, and `--hostname NAME`, so the shell prompt and the console show
+  the name;
+- `--pull never`, because the image is local (`make image`) and is never pulled;
+- the two volumes, the two secret files (read-only) and the device;
+- `-e OMANYWHERE_DRM_MASTER=allow`, with `--drm-master allow`;
+- `-p ADDR:PORT:22`.
+
+It never uses `--privileged`, `--cap-add`, a restart policy, or the host's network or cgroups.
+To run the image without `bin/omanywhere`, as from Compose, see the README's
+[interface](../README.md#the-containers-interface).
+
+### `--tty` and `docker logs`
 
 systemd is the container's PID 1. `--tty` gives it a console (`/dev/console`), as systemd's
 container interface asks. Without a console, systemd writes its boot messages and the units'
@@ -128,12 +154,9 @@ ssh is the only way in. It takes keys only and never logs in as root.
 # omanywhere desk: add this to ~/.ssh/config, then: gliff --headless omanywhere-desk
 Host omanywhere-desk
   HostName 127.0.0.1
-  Port 24816
+  Port 32768
   User omarchy
   HostKeyAlias omanywhere-desk
-  # It listens on this host's loopback only. From another machine, go
-  # through this host:
-  # ProxyJump you@thishost
 ```
 
 `HostKeyAlias` stores each container's host key under its own name in `known_hosts`. Two
@@ -142,7 +165,7 @@ host key lives in the state volume, so it survives `down` and `up`.
 
 To connect from another machine, choose one of these:
 
-- Uncomment the `ProxyJump` line in the block on that machine. ssh then goes through this host.
+- Add `ProxyJump you@this-host` to the block on that machine. ssh then goes through this host.
 - Make the container with `--listen` on an address the other machine can reach, such as
   `up desk --listen 100.64.1.2` for a tailnet address. Prefer a private network to a public
   address: keys are the only lock on the door.

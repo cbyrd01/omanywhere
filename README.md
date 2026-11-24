@@ -74,22 +74,19 @@ hosts, DRM master, gliff, and troubleshooting.
 
 ## The container's interface
 
-`bin/omanywhere` runs the container with these flags. Use them yourself to run it some
-other way, such as from Compose:
+`bin/omanywhere` runs the container much like this. To run it some other way, such as from
+Compose, use the same flags:
 
 ```sh
 docker run -d --tty --cgroupns=private --security-opt writable-cgroups=true \
-  --tmpfs /run --tmpfs /run/lock --tmpfs /tmp \
+  --tmpfs /run --tmpfs /run/lock --tmpfs /tmp --tmpfs /run/secrets:mode=0700 \
   -v NAME-home:/home -v NAME-state:/var/lib/omanywhere \
   -v ./authorized_keys:/run/secrets/authorized_keys:ro -v ./password:/run/secrets/password:ro \
   -p 127.0.0.1:2222:22 [--device nvidia.com/gpu=all | --device /dev/dri] omanywhere:dev
 ```
 
-- systemd runs as PID 1 with no privilege: a private cgroup namespace whose own subtree is
-  writable, and tmpfs where systemd expects one.
-- `--tty` gives systemd a console, so its output reaches `docker logs` (see
-  [docs/usage.md](docs/usage.md#--tty-and-docker-logs)).
-- There is no `--privileged`, no `--cap-add`, and no host network or cgroups.
+[docs/usage.md](docs/usage.md#the-run-flags) explains each flag. There is no `--privileged`,
+no `--cap-add`, and no host network or cgroups.
 
 The `omanywhere` package (`package/omanywhere/`) makes the owner account at boot from these
 inputs:

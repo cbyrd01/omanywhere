@@ -20,20 +20,10 @@ config_root=${OMANYWHERE_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/omanywher
 # The owner account's default name (OMANYWHERE_USER in the container).
 user=omarchy
 
-# How systemd runs as PID 1 under Docker with no privilege, as README.md
-# gives them: a private cgroup namespace whose own subtree is writable, and
-# tmpfs where systemd expects one. --tty gives systemd a console, so its
-# boot and the desktop's skip or refusal messages reach docker logs (with the
-# console's login prompt). Nothing else: no --privileged, no --cap-add, no
-# host network or cgroups.
-run_flags=(
-  --tty
-  --cgroupns=private
-  --security-opt writable-cgroups=true
-  --tmpfs /run
-  --tmpfs /run/lock
-  --tmpfs /tmp
-)
+# The run flags, shared with the tests; docs/usage.md ("The run flags") says
+# what each is for. Found beside this script, through any symlink to it.
+# shellcheck source=lib/run-flags.bash
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/run-flags.bash"
 
 usage() {
   cat >&2 <<'EOF'
@@ -73,9 +63,18 @@ set_name() {
 # first up chose, which later ups reuse.
 listen='' port='' gpu='' drm_master=''
 
-valid_listen() {
-  # An IPv4 or IPv6 address, as docker run -p takes it.
-  [[ $1 =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ || ($1 =~ ^[0-9A-Fa-f:.]+$ && $1 == *:*) ]]
+# check KEY VALUE WHERE: VALUE is valid for the setting KEY, or die saying
+# what WHERE (an option, or the settings file) takes. The options and the
+# settings file are checked alike.
+check() {
+  case $1 in
+    gpu) [[ $2 =~ ^(auto|none|nvidia|dri)$ ]] || die "$3 '$2': takes auto, none, nvidia or dri" ;;
+    # An IPv4 or IPv6 address, as docker run -p takes it.
+    listen) [[ $2 =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ || ($2 =~ ^[0-9A-Fa-f:.]+$ && $2 == *:*) ]] ||
+      die "$3 '$2': takes an IPv4 or IPv6 address, such as 127.0.0.1 or a tailnet address" ;;
+    drm_master) [[ $2 == allow ]] || die "$3 '$2': takes allow" ;;
+    port) [[ $2 =~ ^[1-9][0-9]{0,4}$ && $2 -le 65535 ]] || die "$3 '$2': takes a TCP port" ;;
+  esac
 }
 
 load_settings() {
@@ -83,16 +82,12 @@ load_settings() {
   [[ -f $settings ]] || return 1
   while IFS='=' read -r key value; do
     case $key in
-      listen) listen=$value ;;
-      port) port=$value ;;
-      gpu) gpu=$value ;;
-      drm_master) drm_master=$value ;;
+      listen | port | gpu | drm_master)
+        [[ -z $value ]] || check "$key" "$value" "$settings: $key"
+        printf -v "$key" '%s' "$value"
+        ;;
     esac
   done <"$settings"
-  [[ -z $listen ]] || valid_listen "$listen" || die "$settings: listen '$listen' is not an address"
-  [[ -z $port || $port =~ ^[1-9][0-9]{0,4}$ ]] || die "$settings: port '$port' is not a port"
-  [[ -z $gpu || $gpu =~ ^(auto|none|nvidia|dri)$ ]] || die "$settings: gpu '$gpu' is not auto, none, nvidia or dri"
-  [[ -z $drm_master || $drm_master == allow ]] || die "$settings: drm_master '$drm_master' is not allow (or empty)"
 }
 
 save_settings() {
@@ -155,19 +150,20 @@ gpu_args() {
   esac
 }
 
-# free_port: a TCP port nothing on this host listens on, from 20000-32767
-# (below Linux's default ephemeral range, which outgoing connections use).
-free_port() {
-  local candidate busy
-  busy=$(ss -Hltn 2>/dev/null | awk '{ n = split($4, a, ":"); print a[n] }') || busy=
-  for _ in {1..50}; do
-    candidate=$((20000 + RANDOM % 12768))
-    grep -qx "$candidate" <<<"$busy" || {
-      echo "$candidate"
-      return
-    }
-  done
-  die "found no free port for ssh"
+# pick_port BIND: a free port on BIND, as Docker picks one: through a
+# throwaway container that publishes it. The real container then publishes
+# that port by number. Docker picks an unnamed port (-p BIND::22) again at
+# every start (seen with Docker 29: 32768, 32769, 32770 over two restarts),
+# and with no restart policy a container starts again after each reboot, so
+# ssh's address would keep changing.
+pick_port() {
+  local probe=$container-port out
+  docker run -d --rm --pull never --name "$probe" -p "$1::22" --entrypoint sleep "$image" 60 >/dev/null ||
+    die "could not publish a port on $1"
+  out=$(docker port "$probe" 22/tcp | head -n 1) || true
+  docker rm -f "$probe" >/dev/null 2>&1 || true
+  port=${out##*:}
+  [[ -n $port ]] || die "Docker gave no port on $1"
 }
 
 # --- Secrets. The password is made here and only ever written to a file:
@@ -214,7 +210,9 @@ write_keys() {
   [[ -z $1 ]] || (umask 077 && printf '%s\n' "$1" >"$config/authorized_keys")
 }
 
-# --- Waiting for, and reporting on, the container's systemd.
+# --- Waiting for, and reporting on, the container's systemd. tests/lib.sh
+# has its own wait_running and wait_settled: the CLI doesn't source the
+# tests' helpers.
 
 # wait_booted TIMEOUT: wait until systemd has finished booting (running or
 # degraded, or anything but starting); print its state.
@@ -296,37 +294,33 @@ endpoint() {
 # --- Commands.
 
 cmd_up() {
-  local keyfile='' opt_gpu='' opt_listen='' opt_master='' state
+  local keyfile='' opt_gpu='' opt_listen='' opt_master='' state keys
   set_name "${1:-}"
   shift
   while (($#)); do
     case $1 in
       --gpu)
-        [[ ${2:-} =~ ^(auto|none|nvidia|dri)$ ]] || die "--gpu takes auto, none, nvidia or dri"
+        check gpu "${2:-}" --gpu
         opt_gpu=$2
-        shift 2
         ;;
       --key)
         [[ -n ${2:-} ]] || die "--key takes a public key file"
         keyfile=$2
-        shift 2
         ;;
       --listen)
-        valid_listen "${2:-}" || die "--listen takes an IPv4 or IPv6 address, such as 127.0.0.1 or a tailnet address"
+        check listen "${2:-}" --listen
         opt_listen=$2
-        shift 2
         ;;
       --drm-master)
-        [[ ${2:-} == allow ]] || die "--drm-master takes allow"
-        opt_master=allow
-        shift 2
+        check drm_master "${2:-}" --drm-master
+        opt_master=$2
         ;;
       *) usage ;;
     esac
+    shift 2
   done
   docker image inspect "$image" >/dev/null 2>&1 || die "image $image not found: build it with make image"
 
-  local keys
   state=$(container_state)
   [[ $state == absent || -z $opt_gpu$opt_listen$opt_master ]] ||
     say "ignoring --gpu, --listen and --drm-master: $container exists, and they apply when it's made (omanywhere down $name, then up)"
@@ -355,58 +349,56 @@ cmd_up() {
 
   if [[ $state != absent ]]; then
     say "starting $container ($state)"
-    docker start "$container" >/dev/null
+    docker start "$container" >/dev/null ||
+      die "could not start $container; if another program has taken its ssh port, $(endpoint), free it and run up again"
   else
     say "making $container from $image: $gpu_note"
-    local env=() bind tries
+    local env=() bind out
     [[ -z $drm_master ]] || env=(-e OMANYWHERE_DRM_MASTER=allow)
     bind=$listen
     [[ $listen != *:* ]] || bind="[$listen]"
-    # The port the first up picks is kept, so ssh's address stays the same;
-    # if another program has taken it since, pick again.
-    for tries in 1 2 3 4 5; do
-      [[ -n $port ]] || port=$(free_port)
-      save_settings
-      local out
-      if out=$(docker run -d --pull never --name "$container" --hostname "$name" \
-        "${run_flags[@]}" "${devices[@]}" "${env[@]}" \
-        -p "$bind:$port:22" \
-        -v "$home_volume:/home" -v "$state_volume:/var/lib/omanywhere" \
-        -v "$config/authorized_keys:/run/secrets/authorized_keys:ro" \
-        -v "$config/password:/run/secrets/password:ro" \
-        "$image" 2>&1); then
-        break
-      fi
+    # The first up picks the port; later ones keep it, so ssh's address
+    # stays the same, and fail rather than move it.
+    [[ -n $port ]] || pick_port "$bind"
+    out=$(docker run -d --pull never --name "$container" --hostname "$name" \
+      "${run_flags[@]}" "${devices[@]}" "${env[@]}" \
+      -p "$bind:$port:22" \
+      -v "$home_volume:/home" -v "$state_volume:/var/lib/omanywhere" \
+      -v "$config/authorized_keys:/run/secrets/authorized_keys:ro" \
+      -v "$config/password:/run/secrets/password:ro" \
+      "$image" 2>&1) || {
       docker rm -f "$container" >/dev/null 2>&1 || true
-      if [[ $out =~ (port is already allocated|address already in use) ]] && ((tries < 5)); then
-        say "port $port is taken; picking another"
-        port=
-        continue
-      fi
-      die "docker run failed: $out"
-    done
+      die "could not make $container with ssh on $(endpoint), the port kept from its first up: $out
+If another program has taken port $port, free it and run up again, or delete the port line in $settings to take a new one (the ssh-config changes then)."
+    }
+    save_settings
   fi
 
   say "waiting for systemd in $container"
   local system
-  system=$(wait_booted 180) || die "$container did not boot; see docker logs $container"
+  system=$(wait_booted 180) || {
+    docker stop "$container" >/dev/null 2>&1 || true
+    die "$container did not boot, so it is stopped; see docker logs $container"
+  }
   wait_settled 60 || say "systemd in $container still has jobs queued after 60 s"
 
-  # No owner, no way in: ssh needs the owner unit. Fail loudly, with its
-  # journal, and leave the container stopped, not running unreachable.
-  if [[ $(unit_state omanywhere-owner.service) != "active success" ]]; then
-    say "the owner unit failed, so there is no way in; its journal:"
-    cexec journalctl -b -u omanywhere-owner.service -o cat --no-pager -n 20 >&2 || true
+  # No owner or no sshd, no way in: fail loudly, with the unit's journal,
+  # and leave the container stopped, not running unreachable.
+  local unit
+  for unit in omanywhere-owner.service sshd.service; do
+    [[ $(unit_state "$unit") != "active "* ]] || continue
+    say "$unit is $(unit_state "$unit"), so there is no way in; its journal:"
+    cexec journalctl -b -u "$unit" -o cat --no-pager -n 20 >&2 || true
     docker stop "$container" >/dev/null || true
     die "stopped $container. Fix the input (up $name --key FILE for the keys) and run up again, or omanywhere down $name"
-  fi
+  done
   print_status "$system"
   echo
   echo "Connect: omanywhere ssh-config $name >>~/.ssh/config, then gliff --headless $container"
 }
 
 cmd_down() {
-  local purge='' yes='' state answer
+  local purge='' yes='' state answer out
   set_name "${1:-}"
   shift
   while (($#)); do
@@ -433,7 +425,16 @@ cmd_down() {
     say "$container does not exist"
   fi
   if [[ -n $purge ]]; then
-    docker volume rm "$home_volume" "$state_volume" >/dev/null 2>&1 || true
+    local volume kept=()
+    for volume in "$home_volume" "$state_volume"; do
+      docker volume inspect "$volume" >/dev/null 2>&1 || continue
+      out=$(docker volume rm "$volume" 2>&1) || {
+        say "could not remove the volume $volume: $out"
+        kept+=("$volume")
+      }
+    done
+    # The config holds the password for what the volumes keep.
+    ((${#kept[@]} == 0)) || die "kept $config, as ${kept[*]} remains; run down $name --purge again once nothing uses it"
     rm -rf -- "$config"
     say "removed the volumes $home_volume and $state_volume, and $config"
   else
@@ -456,13 +457,6 @@ Host $container
   User $user
   HostKeyAlias $container
 EOF
-  if [[ $listen == 127.* || $listen == ::1 ]]; then
-    cat <<EOF
-  # It listens on this host's loopback only. From another machine, go
-  # through this host:
-  # ProxyJump $(id -un)@$(uname -n)
-EOF
-  fi
 }
 
 # print_status [SYSTEMD]: the container's state, and when it runs, systemd's,
@@ -486,15 +480,7 @@ cmd_status() {
   [[ $(container_state) != absent ]]
 }
 
-case ${1:-} in
-  up | down | status)
-    cmd=$1
-    shift
-    "cmd_$cmd" "$@"
-    ;;
-  ssh-config)
-    shift
-    cmd_ssh_config "$@"
-    ;;
-  *) usage ;;
-esac
+[[ ${1:-} =~ ^(up|down|ssh-config|status)$ ]] || usage
+cmd=cmd_${1//-/_}
+shift
+"$cmd" "$@"

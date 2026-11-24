@@ -122,7 +122,8 @@ expect "render node: a card without one" "$(render_node "$drm_class/card1")" ""
 # The monitor rules for a GPU: the card's connectors at start, and any name
 # the kernel gives a connector, are turned off; Hyprland's own outputs,
 # HEADLESS-N and gliff's gliff-N, never are. prepare also writes the gliff
-# environment sshd gives ssh sessions, for every kind of card.
+# environment sshd gives ssh sessions, for every kind of card, and reloads
+# sshd.
 docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "image $IMAGE not found (run make image)"
 env_file=$tmp/session.env
 rules=$tmp/container.lua
@@ -130,12 +131,19 @@ sshd_env=$tmp/sshd/gliff.conf
 card_sysfs() {
   echo "$drm_class/${1##*/}"
 }
+# A stand-in that notes the reload: this runs on the test host, whose sshd
+# must never be touched.
+reload_sshd() {
+  echo reload >>"$tmp/reloads"
+}
 # prepared CARD KIND DRIVER: run prepare for that choice; print the SetEnv
-# line it wrote for sshd.
+# line it wrote for sshd, once it has asked sshd to reload, and only then.
 prepared() {
-  rm -f "$sshd_env"
+  rm -f "$sshd_env" "$tmp/reloads"
   printf '%s\n' "OMANYWHERE_CARD=/dev/dri/$1" "OMANYWHERE_CARD_KIND=$2" "OMANYWHERE_CARD_DRIVER=$3" >"$env_file"
   (prepare) 2>/dev/null || fail "prepare failed on $1 ($2, $3)"
+  [[ $(cat "$tmp/reloads" 2>/dev/null) == reload ]] || fail "prepare on $1 did not reload sshd once"
+  [[ $(stat -c %a "${sshd_env%/*}") == 755 ]] || fail "prepare left ${sshd_env%/*} other than 0755"
   grep -v '^#' "$sshd_env"
 }
 expect "sshd's gliff environment, virtual card" "$(prepared card3 virtual vkms)" "SetEnv GLIFF_VIDEO=cpu GLIFF_CAPTURE=shm"

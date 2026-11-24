@@ -12,7 +12,8 @@
 #            card to /run/omanywhere/hypr/container.lua, which
 #            /usr/share/omanywhere/hypr/hyprland.lua loads after the owner's
 #            config, and how gliff-server should capture and encode on it to
-#            /run/omanywhere/sshd/gliff.conf, which sshd reads (see gliff_env).
+#            /run/omanywhere/sshd/gliff.conf, which sshd includes (see
+#            gliff_env); then reloads sshd, if it runs, to read it.
 #   start    ExecStart, as the owner, in the logind session PAM opened. Reads
 #            the choice and execs uwsm.
 #
@@ -195,6 +196,14 @@ render_node() {
 # memory (shm), which takes gliff's CPU pipeline (OpenH264); that's what the
 # CPU-only spike on vkms needed. sshd gives these to every ssh session, so a
 # plain `gliff --headless` client needs no flags.
+# reload_sshd: have a running sshd re-read its config, the gliff environment
+# included (SIGHUP; sessions already open are unaffected). An sshd that hasn't
+# started yet reads it when it starts, so nothing is started here; and
+# --no-block, so the session never waits on sshd.
+reload_sshd() {
+  systemctl --no-block try-reload-or-restart sshd.service
+}
+
 gliff_env() {
   if [[ $1 == gpu && -n $2 ]]; then
     echo "GLIFF_VIDEO=gpu GLIFF_CAPTURE=auto"
@@ -253,9 +262,9 @@ prepare() {
   local render gliff
   render=$(render_node "$(card_sysfs "$OMANYWHERE_CARD")")
   gliff=$(gliff_env "$OMANYWHERE_CARD_KIND" "$render")
-  # sshd reads it when it starts, which is after this (its omanywhere.conf
-  # drop-in orders it after the session).
-  install -D -m 0644 /dev/stdin "$sshd_env" <<EOF
+  # sshd includes what's there, so only root may write to it.
+  install -d -m 0755 "${sshd_env%/*}"
+  install -m 0644 /dev/stdin "$sshd_env" <<EOF
 # Written by /usr/lib/omanywhere/session for this boot's DRM card,
 # $OMANYWHERE_CARD ($OMANYWHERE_CARD_KIND, render node: ${render:-none}): how
 # gliff-server, started over ssh, captures and encodes the desktop.
@@ -263,6 +272,7 @@ prepare() {
 SetEnv $gliff
 EOF
   say "gliff over ssh: $gliff (render node: ${render:-none})"
+  reload_sshd || say "could not reload sshd; ssh sessions get the gliff environment once it restarts"
   if [[ $OMANYWHERE_CARD_KIND == virtual ]]; then
     install -D -m 0644 /dev/stdin "$rules" <<EOF
 -- Written by /usr/lib/omanywhere/session for this boot's DRM card,
