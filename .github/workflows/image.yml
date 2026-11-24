@@ -53,7 +53,7 @@ jobs:
       - name: Build the image
         run: make image
       - name: Tests
-        run: make test-session-logic test-boot test-owner
+        run: make test-session-logic test-boot test-owner test-cli
       - name: Disk after the build
         if: always()
         run: df -h / /mnt
