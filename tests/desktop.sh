@@ -70,9 +70,10 @@ hyprctl() {
 }
 
 # hypr_json QUERY FILTER: hyprctl -j QUERY as the owner, through jq FILTER.
+# QUERY is split into words ('monitors all').
 hypr_json() {
   # shellcheck disable=SC2016 # the script expands its own $1 and $2
-  as_owner bash -c 'hyprctl --instance 0 -j "$1" | jq -r "$2"' bash "$1" "$2"
+  as_owner bash -c 'hyprctl --instance 0 -j $1 | jq -r "$2"' bash "$1" "$2"
 }
 
 # check_no_physical WHEN: Hyprland's enabled monitors include no physical
@@ -158,6 +159,17 @@ done
 size=$(cexec "$name" magick /tmp/s.png -format '%wx%h' info:)
 pass "grim: a ${size} PNG with $colours colours"
 
+# A named headless output, the kind gliff makes for its client (gliff-N),
+# stays on: the rules turn off host connectors only.
+hyprctl output create headless gliff-test >/dev/null || fail "hyprctl output create headless gliff-test failed"
+for ((i = 0; i < 20; i++)); do
+  state=$(hypr_json 'monitors all' '.[] | select(.name == "gliff-test") | .disabled')
+  [[ -n $state ]] && break
+  sleep 0.5
+done
+[[ $state == false ]] || fail "the named headless output gliff-test is ${state:+disabled}${state:-missing} after it was made"
+pass "a named headless output, gliff-test, stays on"
+
 # Reloading keeps the container's monitor rules: the physical connectors stay
 # off, and the desktop keeps a monitor. Hyprland reloads after hyprctl
 # returns, and says so on its event socket: wait for that, up to 10 s.
@@ -178,9 +190,12 @@ while b"configreloaded>>" not in seen:
 count=$(hypr_json monitors length)
 ((count > 0)) || fail "no monitor after hyprctl reload"
 check_no_physical "after hyprctl reload"
+[[ $(hypr_json 'monitors all' '.[] | select(.name == "gliff-test") | .disabled') == false ]] ||
+  fail "the named headless output gliff-test is off (or gone) after hyprctl reload"
+hyprctl output remove gliff-test >/dev/null || fail "hyprctl output remove gliff-test failed"
 errors=$(hypr_json configerrors '.[]' | sed '/^$/d') || fail "hyprctl -j configerrors failed"
 [[ -z $errors ]] || fail "Hyprland reports config errors: $errors"
-pass "hyprctl reload: $count monitor(s), no config errors"
+pass "hyprctl reload: $count monitor(s), gliff-test still on, no config errors"
 
 # The owner's user manager has no failed unit (package/omanywhere/
 # container-units skips the user units that can't work here), and the system

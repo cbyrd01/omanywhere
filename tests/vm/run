@@ -32,7 +32,8 @@ docker build -q --build-arg BASE_IMAGE="$BASE_IMAGE" -f "$here/Containerfile" -t
 
 # image_key IMAGE: a key for the image's content, its layers and config. Not
 # its id: BuildKit's provenance attestation gives every build, even a fully
-# cached one, a new id. tests/vm/guest computes the same key.
+# cached one, a new id. The key names the saved image, and tests/vm/guest
+# reads it from /vm/image.key.
 image_key() {
   docker image inspect -f '{{json .RootFS.Layers}}{{json .Config}}' "$1" | sha256sum | cut -c1-64
 }

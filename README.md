@@ -40,10 +40,15 @@ Not started. The research and the approach are in `notes/` (local, not committed
   (`--device nvidia.com/gpu=all`, or `/dev/dri`) every connector, the host's displays, is turned
   off, now and whenever one appears, and Hyprland creates its own headless output. Without a
   usable card the session is skipped, and the journal and `docker logs` (the container runs
-  with `--tty`, so systemd has a console) say why.
+  with `--tty`, so systemd has a console) say why. The console's login prompt (getty) lands
+  in `docker logs` too, for now.
 - The session refuses a GPU that no display server is DRM master of: Hyprland would take
   master and turn the host's outputs off. On a host with no display of its own, set
-  `OMANYWHERE_DRM_MASTER=allow` (see `package/omanywhere/session`).
+  `OMANYWHERE_DRM_MASTER=allow` (see `package/omanywhere/session`). The session checks again
+  just before it starts Hyprland, but master can still change hands in the second between
+  that check and Hyprland opening the card; that window can't be closed while Hyprland opens
+  the card itself, and the real fix is upstream (a headless compositor that needs no card).
+- A refused or skipped desktop stays down until the container restarts.
 - gliff-server (already in Omarchy's base packages) captures that output and injects input
   through Wayland, so the container needs no `uinput`, input devices or seat.
 - Access is ssh only (`ssh host gliff-server --stdio`), with keys only and no published ports.
@@ -61,7 +66,7 @@ make lint    # shellcheck + gitleaks over the full history (what CI runs)
 make image   # cosign-verify the Arch base, then build omanywhere:dev (image/Containerfile)
 make test-boot    # boot the image under systemd with no privilege and check it (tests/boot.sh)
 make test-owner   # the owner account, ssh, and recreating over the same volumes (tests/owner.sh)
-make test-session-logic # the session's card and DRM master decisions, on the host
+make test-session-logic # the session's card, DRM master and monitor-rule decisions, no device
 make test         # these three; the no-card desktop case is in tests/boot.sh
 make test-desktop # the desktop session on a card (tests/desktop.sh): set
                   # OMANYWHERE_TEST_DEVICES, such as --device nvidia.com/gpu=all

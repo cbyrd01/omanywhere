@@ -12,7 +12,8 @@ IMAGE=${IMAGE:-omanywhere:dev}
 # --tty gives systemd a console (/dev/console), as systemd's container
 # interface asks: without one, systemd sends its own output and the units'
 # console output to /dev/null, and docker logs is empty. With it, docker logs
-# shows the boot and the desktop session's skip or refusal messages.
+# shows the boot and the desktop session's skip or refusal messages (and the
+# stock console getty's login prompt, which Task 5 deals with).
 RUN_FLAGS=(
   --tty
   --cgroupns=private

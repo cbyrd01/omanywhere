@@ -39,8 +39,9 @@ image: verify-base
 # test-desktop and test-desktop-vm.
 test: test-session-logic test-boot test-owner
 
-# The desktop session's decisions, on the host: no container, no device.
-test-session-logic:
+# The desktop session's decisions, with no device (the image's Lua runs the
+# monitor rules).
+test-session-logic: image
 	tests/session-logic.sh
 
 test-boot: image

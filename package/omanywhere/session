@@ -34,13 +34,24 @@
 # out), Hyprland would become master and its first modeset would turn the
 # host's outputs off. So check refuses a GPU nobody is master of, unless
 # OMANYWHERE_DRM_MASTER=allow (for a host with no display of its own; the
-# owner script passes it from the container's inputs). vkms is exempt.
+# owner script passes it from the container's inputs). vkms is exempt. A
+# refused desktop stays down until the container restarts.
+#
+# Master can change hands after check: plymouth quits before the host's
+# display manager starts, a greeter hands over to the user's session, someone
+# switches VT. So start checks again just before it execs uwsm, and fails
+# (Restart= then runs check again, which skips). What's left is the second or
+# so between that check and Hyprland opening the card, which can't be closed
+# from here: with LIBSEAT_BACKEND=noop nothing between them holds the card.
+# The real fix is a compositor that needs no card to run headless (upstream
+# draft: notes/upstream/aquamarine-headless-without-kms.md).
 set -euo pipefail
 
-readonly env_file=/run/omanywhere/session.env
-readonly rules=/run/omanywhere/hypr/container.lua
-# Where the cards' connectors and the nvidia_drm modeset flag are read (plain
-# variables, so tests/session-logic.sh can point them at a made-up sysfs).
+# Where the choice, the monitor rules, the cards' connectors and the
+# nvidia_drm modeset flag live (plain variables, so tests/session-logic.sh
+# can point them at a made-up tree).
+env_file=/run/omanywhere/session.env
+rules=/run/omanywhere/hypr/container.lua
 drm_class=/sys/class/drm
 nvidia_modeset=/sys/module/nvidia_drm/parameters/modeset
 
@@ -137,8 +148,26 @@ verdict() {
   fi
 }
 
+# guard_master NODE KIND: exit 1 with the reason if the session must not use
+# card NODE of KIND: a GPU nobody is DRM master of, without
+# OMANYWHERE_DRM_MASTER=allow.
+guard_master() {
+  local node=$1 kind=$2 master=n/a
+  if [[ $kind == gpu ]]; then
+    master=$(probe_master "$node") || {
+      say "can't open $node to check its DRM master"
+      exit 1
+    }
+  fi
+  if [[ $(verdict "$kind" "$master" "${OMANYWHERE_DRM_MASTER:-}") == refuse ]]; then
+    say "no display server holds DRM master on $node; refusing to take it (it would blank the host's outputs). On a host with no display of its own, set OMANYWHERE_DRM_MASTER=allow"
+    exit 1
+  fi
+  [[ $master != free ]] || say "no display server holds DRM master on $node; taking it, as OMANYWHERE_DRM_MASTER=allow says"
+}
+
 check() {
-  local node sys kind driver why gpu=() virtual=() ignored=() master=n/a
+  local node sys kind driver why gpu=() virtual=() ignored=()
   # Exit 1 skips the session, so anything unexpected fails it instead.
   set -E
   trap 'say "check failed at line $LINENO"; exit 255' ERR
@@ -167,17 +196,7 @@ check() {
   node=$1 driver=$2 kind=$3
   ((${#ignored[@]} == 0)) || say "ignoring ${ignored[*]}"
 
-  if [[ $kind == gpu ]]; then
-    master=$(probe_master "$node") || {
-      say "can't open $node to check its DRM master"
-      exit 1
-    }
-  fi
-  if [[ $(verdict "$kind" "$master" "${OMANYWHERE_DRM_MASTER:-}") == refuse ]]; then
-    say "no display server holds DRM master on $node; refusing to take it (it would blank the host's outputs). On a host with no display of its own, set OMANYWHERE_DRM_MASTER=allow"
-    exit 1
-  fi
-  [[ $master != free ]] || say "no display server holds DRM master on $node; taking it, as OMANYWHERE_DRM_MASTER=allow says"
+  guard_master "$node" "$kind"
 
   [[ $node =~ ^/dev/dri/card[0-9]+$ && $driver =~ ^[A-Za-z0-9_.-]+$ ]] || {
     say "unexpected card $node or driver $driver"
@@ -224,12 +243,33 @@ for _, name in ipairs(host_outputs) do
   hl.monitor({ output = name, disabled = true })
 end
 
--- Any other output but our own headless ones, such as a connector the host
--- plugs in later or a DisplayPort MST stream, is turned off as it appears,
--- and kept off across reloads. That's after its first modeset, so the list
--- above stays the first line of defence.
+-- A connector the host plugs in later, or a DisplayPort MST stream, is
+-- turned off as it appears, and kept off across reloads. That's after its
+-- first modeset, so the list above stays the first line of defence. A host
+-- output is one of those above, or any name the kernel gives a connector:
+-- its type (drm_connector_enum_list in drivers/gpu/drm/drm_connector.c) and
+-- a number. Outputs Hyprland makes, HEADLESS-N and gliff's named headless
+-- outputs (gliff-N), are never one.
+local connector_types = {
+  "Unknown", "VGA", "DVI-I", "DVI-D", "DVI-A", "Composite", "SVIDEO", "LVDS",
+  "Component", "DIN", "9PinDIN", "DP", "HDMI-A", "HDMI-B", "TV", "eDP",
+  "Virtual", "DSI", "DPI", "Writeback", "SPI", "USB",
+}
 local function host_output(name)
-  return name ~= nil and name:sub(1, 9) ~= "HEADLESS-"
+  if name == nil then
+    return false
+  end
+  for _, known in ipairs(host_outputs) do
+    if name == known then
+      return true
+    end
+  end
+  for _, kind in ipairs(connector_types) do
+    if name:sub(1, #kind + 1) == kind .. "-" and name:sub(#kind + 2):match("^%d+$") then
+      return true
+    end
+  end
+  return false
 end
 for _, monitor in ipairs(hl.get_monitors()) do
   if host_output(monitor.name) then
@@ -253,6 +293,10 @@ EOF
 
 start() {
   local render OMANYWHERE_CARD OMANYWHERE_CARD_KIND OMANYWHERE_CARD_DRIVER
+  ((EUID != 0)) || {
+    say "start runs as the owner (the unit's User=), never as root"
+    exit 1
+  }
   # shellcheck source=/dev/null # written by check, as root
   source "$env_file"
   # aquamarine would otherwise open every card it finds. uwsm passes the
@@ -268,6 +312,8 @@ start() {
     export LIBGL_ALWAYS_SOFTWARE=1
     say "no render node the owner can open: LIBGL_ALWAYS_SOFTWARE=1, GL renders on the CPU"
   fi
+  # Master may have changed hands since check (see the top of this file).
+  guard_master "$OMANYWHERE_CARD" "$OMANYWHERE_CARD_KIND"
   say "starting Hyprland under uwsm on $OMANYWHERE_CARD ($OMANYWHERE_CARD_KIND, $OMANYWHERE_CARD_DRIVER)"
   # As Omarchy's session entry, /usr/share/wayland-sessions/hyprland-uwsm.desktop.
   exec uwsm start -e -D Hyprland hyprland.desktop
