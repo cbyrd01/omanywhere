@@ -39,8 +39,11 @@
 # out), Hyprland would become master and its first modeset would turn the
 # host's outputs off. So check refuses a GPU nobody is master of, unless
 # OMANYWHERE_DRM_MASTER=allow (for a host with no display of its own; the
-# owner script passes it from the container's inputs). vkms is exempt. A
-# refused desktop stays down until the container restarts.
+# owner script passes it from the container's inputs). A vkms card is the
+# other way round: the desktop must be its master to draw on it, so check
+# refuses one another process holds, usually a host desktop that took it from
+# its seat (docs/usage.md, DRM master). A refused desktop stays down until the
+# container restarts.
 #
 # Master can change hands after check: plymouth quits before the host's
 # display manager starts, a greeter hands over to the user's session, someone
@@ -161,11 +164,13 @@ PY
 }
 
 # verdict KIND MASTER ALLOW: "use" or "refuse" a card of KIND (gpu or
-# virtual) whose DRM master is MASTER (held, free, or n/a for a virtual card),
-# given OMANYWHERE_DRM_MASTER=ALLOW.
+# virtual) whose DRM master is MASTER (held or free), given
+# OMANYWHERE_DRM_MASTER=ALLOW.
 verdict() {
   local kind=$1 master=$2 allow=$3
-  if [[ $kind == virtual || $master == held || $allow == allow ]]; then
+  if [[ $kind == virtual ]]; then
+    [[ $master == free ]] && echo use || echo refuse
+  elif [[ $master == held || $allow == allow ]]; then
     echo use
   else
     echo refuse
@@ -174,20 +179,23 @@ verdict() {
 
 # guard_master NODE KIND: exit 1 with the reason if the session must not use
 # card NODE of KIND: a GPU nobody is DRM master of, without
-# OMANYWHERE_DRM_MASTER=allow.
+# OMANYWHERE_DRM_MASTER=allow, or a virtual card someone else is master of.
 guard_master() {
-  local node=$1 kind=$2 master=n/a
-  if [[ $kind == gpu ]]; then
-    master=$(probe_master "$node") || {
-      say "can't open $node to check its DRM master"
+  local node=$1 kind=$2 master
+  master=$(probe_master "$node") || {
+    say "can't open $node to check its DRM master"
+    exit 1
+  }
+  if [[ $(verdict "$kind" "$master" "${OMANYWHERE_DRM_MASTER:-}") == refuse ]]; then
+    [[ $kind == gpu ]] || {
+      say "another process, most likely the host's desktop, is DRM master of $node, a virtual card, so the desktop can't draw on it (see DRM master in docs/usage.md)"
       exit 1
     }
-  fi
-  if [[ $(verdict "$kind" "$master" "${OMANYWHERE_DRM_MASTER:-}") == refuse ]]; then
     say "no display server holds DRM master on $node; refusing to take it (it would blank the host's outputs). On a host with no display of its own, set OMANYWHERE_DRM_MASTER=allow"
     exit 1
   fi
-  [[ $master != free ]] || say "no display server holds DRM master on $node; taking it, as OMANYWHERE_DRM_MASTER=allow says"
+  [[ $kind == gpu && $master == free ]] || return 0
+  say "no display server holds DRM master on $node; taking it, as OMANYWHERE_DRM_MASTER=allow says"
 }
 
 # render_node SYSFS: the container's node for the card's own render node
@@ -240,7 +248,7 @@ reload_sshd() {
 }
 
 check() {
-  local node sys kind driver why gpu=() virtual=() ignored=()
+  local node sys kind driver why master gpu=() virtual=() ignored=()
   # Exit 1 skips the session, so anything unexpected fails it instead.
   set -E
   trap 'say "check failed at line $LINENO"; exit 255' ERR
@@ -251,7 +259,20 @@ check() {
     read -r kind driver why < <(classify "$sys")
     case $kind in
       gpu) ((${#gpu[@]})) || gpu=("$node" "$driver" gpu) ;;
-      virtual) ((${#virtual[@]})) || virtual=("$node" "$driver" virtual) ;;
+      virtual)
+        # The desktop must be a virtual card's master, so pass over one that
+        # another process holds and take the next. Probing a free card makes
+        # the probe its master for that moment.
+        if ((${#virtual[@]})); then
+          :
+        elif ! master=$(probe_master "$node" 2>/dev/null); then
+          ignored+=("$node ($driver: can't open it to check its DRM master)")
+        elif [[ $master == held ]]; then
+          ignored+=("$node ($driver: held by another process, most likely the host's desktop; see DRM master in docs/usage.md)")
+        else
+          virtual=("$node" "$driver" virtual)
+        fi
+        ;;
       *) ignored+=("$node ($driver: $why)") ;;
     esac
   done
@@ -399,7 +420,15 @@ start() {
     export LIBGL_ALWAYS_SOFTWARE=1
     say "no render node the owner can open: LIBGL_ALWAYS_SOFTWARE=1, GL renders on the CPU"
   fi
-  # Master may have changed hands since check (see the top of this file).
+  # Master may have changed hands since check (see the top of this file). On
+  # a restart, the last Hyprland (in the owner's user manager, not this unit)
+  # may still hold a virtual card for a moment.
+  if [[ $OMANYWHERE_CARD_KIND == virtual ]]; then
+    for _ in {1..10}; do
+      [[ $(probe_master "$OMANYWHERE_CARD" 2>/dev/null) == held ]] || break
+      sleep 1
+    done
+  fi
   guard_master "$OMANYWHERE_CARD" "$OMANYWHERE_CARD_KIND"
   say "starting Hyprland under uwsm on $OMANYWHERE_CARD ($OMANYWHERE_CARD_KIND, $OMANYWHERE_CARD_DRIVER)"
   # As Omarchy's session entry, /usr/share/wayland-sessions/hyprland-uwsm.desktop.

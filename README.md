@@ -72,8 +72,8 @@ Estimates for one desktop, not yet tested at these limits:
 - On a GPU's card (`--device nvidia.com/gpu=all`, or `/dev/dri`), the connectors are the
   host's displays. The session turns every one of them off, at start and whenever one
   appears, and Hyprland draws on a headless output of its own.
-- CPU-only hosts need a `vkms` card that the host loads. Its connector is the desktop's
-  monitor.
+- CPU-only hosts need a `vkms` card that the host loads, one per container. Its connector is
+  the desktop's monitor. On a host with a desktop of its own, see docs/usage.md (DRM master).
 - Without a usable card, the session is skipped. The journal and `docker logs` say why.
 - The session refuses a GPU that no display server is DRM master of, because Hyprland would
   take master and turn the host's outputs off. On a host with no display of its own, set
@@ -106,7 +106,7 @@ docker run -d --tty --cgroupns=private --security-opt writable-cgroups=true \
 
 [docs/usage.md](docs/usage.md#the-run-flags) explains each flag. There is no `--privileged`,
 no `--cap-add`, and no host network or cgroups. The seccomp profile is Docker's default plus
-namespaces for Chromium's sandbox.
+namespaces for Chromium's sandbox, with netfilter kept out of reach.
 
 The `omanywhere` package (`package/omanywhere/`) makes the owner account at boot from these
 inputs (`package/omanywhere/owner` has the details):

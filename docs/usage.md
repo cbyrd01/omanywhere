@@ -127,7 +127,7 @@ Every container gets these flags, from `lib/run-flags.bash`. The tests use the s
 | `--cgroupns=private`, `--security-opt writable-cgroups=true` | systemd runs as PID 1 with no privilege, in a private cgroup namespace whose own subtree is writable. |
 | `--tmpfs /run`, `--tmpfs /run/lock`, `--tmpfs /tmp` | systemd expects a tmpfs at each of these. |
 | `--tmpfs /run/secrets:mode=0700` | The password and keys are bind-mounted inside this root-only directory. The files belong to your host user, whose uid is usually the owner's (1000), so the directory is what keeps the owner's programs from reading the sudo password. |
-| `--security-opt seccomp=lib/seccomp.json` | Docker's default seccomp profile plus one rule: any process may call `clone` and `unshare` with namespace flags, as Podman's default profile allows. Docker's default allows that only with `CAP_SYS_ADMIN`, and Chromium's sandbox needs it: a user namespace, then a new PID namespace per renderer from inside it. Without the rule Chromium crashes at start. The kernel still decides the rest: a process outside a user namespace of its own gets no new mount, network or PID namespace. A rule allowing only calls that make a user namespace would block no more kernel code, since such a call can ask for every other namespace too, and it breaks Chromium's per-renderer PID namespaces. The cost is that code in the container can reach the kernel's user-namespace code. `scripts/seccomp-profile` makes the file from Docker's profile (moby, Apache License 2.0) for the tag the script names; rerun it when Docker's default changes. |
+| `--security-opt seccomp=lib/seccomp.json` | Docker's default seccomp profile plus one rule: any process may call `clone` and `unshare` with namespace flags, as Podman's default profile allows. Docker's default allows that only with `CAP_SYS_ADMIN`, and Chromium's sandbox needs it: a user namespace, then a new PID namespace per renderer from inside it. Without the rule Chromium crashes at start. The kernel still decides the rest: a process outside a user namespace of its own gets no new mount, network or PID namespace. A rule allowing only calls that make a user namespace would block no more kernel code, since such a call can ask for every other namespace too, and it breaks Chromium's per-renderer PID namespaces. The cost is [below](#seccomp-and-namespaces). `scripts/seccomp-profile` makes the file from Docker's profile (moby, Apache License 2.0) for the tag the script names; rerun it when Docker's default changes. |
 | `--tty` | It gives systemd a console. See [below](#--tty-and-docker-logs). |
 
 `up` also passes these for each container:
@@ -143,6 +143,20 @@ Every container gets these flags, from `lib/run-flags.bash`. The tests use the s
 It never uses `--privileged`, `--cap-add`, a restart policy, or the host's network or cgroups.
 To run the image without `bin/omanywhere`, as from Compose, see the README's
 [interface](../README.md#the-containers-interface).
+
+### seccomp and namespaces
+
+In a user namespace of its own, code in the container is root of a new network namespace and
+can reach kernel networking code that Docker's default keeps from it, the source of several
+container escapes. The profile closes the largest part of that, netfilter:
+
+- no netlink socket for `NETLINK_NETFILTER`;
+- no `socketcall`, the i386 call that hides a socket's arguments from seccomp. Arch's
+  lib32-glibc makes the socket calls directly, so only old 32-bit binaries lose networking.
+
+Traffic control (`tc`, over route netlink) stays reachable, and so does legacy iptables on a
+host that loads `ip_tables`. Keep the host's kernel patched, above all where people or agents
+you don't trust use the desktops.
 
 ### `--tty` and `docker logs`
 
@@ -244,12 +258,46 @@ draws on a headless output instead. Rendering and encoding run on the GPU.
 
 **CPU-only host.** The host must provide a virtual card: `modprobe vkms`, kept across boots
 with a file in `/etc/modules-load.d/`. vkms's connector is the desktop's monitor. Each
-container needs a vkms card of its own, because a card has only one DRM master (vkms's configfs
-makes more than one). Give each container its card with `--gpu dri:/dev/dri/cardN`, since
+container needs a vkms card of its own, because the desktop must be the card's DRM master and a
+card has only one. Give each container its card with `--gpu dri:/dev/dri/cardN`, since
 `--gpu dri` passes every card. Hyprland renders with llvmpipe and gliff encodes with OpenH264,
 which costs about 2.5 to 3.5 cores for an active 1080p session and almost nothing when the
-screen is still. Don't load vkms on a machine
-whose own desktop you are using. It adds a monitor to that desktop.
+screen is still.
+
+On a host with a desktop of its own, that desktop takes every new card on its seat as a
+monitor and becomes its DRM master, and the container's session then refuses the card. Before
+loading vkms, add this udev rule as `/etc/udev/rules.d/72-omanywhere-vkms.rules` and run
+`sudo udevadm control --reload`, so vkms cards stay off the host's seat:
+
+```
+# vkms cards are for containers' desktops: keep them off the host's seat.
+SUBSYSTEM=="drm", KERNEL=="card[0-9]*", DRIVERS=="vkms|faux_driver", TAG-="seat", TAG-="master-of-seat", TAG-="uaccess", ENV{ID_SEAT}="omanywhere"
+```
+
+A card made before the rule stays on the seat until vkms is unloaded or the host reboots.
+
+`modprobe vkms` makes one card. Where vkms has configfs (`/sys/kernel/config/vkms` exists),
+make one more per container, named for it (here `desk`), in a root shell (`sudo -i`):
+
+```sh
+d=/sys/kernel/config/vkms/omanywhere-desk
+mkdir $d $d/planes/plane0 $d/crtcs/crtc0 $d/encoders/encoder0 $d/connectors/connector0
+echo 1 >$d/planes/plane0/type   # primary
+ln -s $d/crtcs/crtc0 $d/planes/plane0/possible_crtcs/
+ln -s $d/crtcs/crtc0 $d/encoders/encoder0/possible_crtcs/
+ln -s $d/encoders/encoder0 $d/connectors/connector0/possible_encoders/
+echo 1 >$d/enabled
+ls /sys/devices/faux/omanywhere-desk/drm/   # its cardN
+```
+
+configfs cards don't survive a reboot. To remove one sooner, after `down NAME`:
+
+```sh
+echo 0 >$d/enabled
+rm $d/planes/plane0/possible_crtcs/crtc0 $d/encoders/encoder0/possible_crtcs/crtc0 \
+  $d/connectors/connector0/possible_encoders/encoder0
+rmdir $d/planes/plane0 $d/crtcs/crtc0 $d/encoders/encoder0 $d/connectors/connector0 $d
+```
 
 ## DRM master
 
@@ -263,8 +311,13 @@ logged out. So the session refuses such a GPU and says why in `status`, in `dock
 in the journal.
 
 On a host with no display of its own, such as a server GPU, allow it with
-`up NAME --drm-master allow` (the container gets `OMANYWHERE_DRM_MASTER=allow`). vkms cards
-are exempt, because their connectors belong to the container.
+`up NAME --drm-master allow` (the container gets `OMANYWHERE_DRM_MASTER=allow`).
+
+A vkms card is the other way round. Its connector belongs to the container, and the desktop
+must be its master to draw on it. When another process holds it, Hyprland starts but every
+modeset fails and its monitor stays at 0x0, so the session passes over such a card, takes the
+next free one, and says why when none is left. On a host with a desktop of its own, that process
+is the host's desktop: see the udev rule under [CPU and GPU hosts](#cpu-and-gpu-hosts).
 
 The guard covers only Hyprland's start. The owner is in the card's group, so any process in
 the container can open the card. While no host display server holds master (at a text
@@ -283,6 +336,9 @@ Start with `omanywhere status NAME`.
   [CPU and GPU hosts](#cpu-and-gpu-hosts)).
 - **`desktop skipped: no display server holds DRM master ...`.** See [DRM master](#drm-master).
   On a desktop host, log in to the host's desktop, then `docker restart omanywhere-NAME`.
+- **`no usable DRM card: ... (vkms: held by another process ...)`.** See
+  [DRM master](#drm-master), then give the container a new card: `down NAME`, then
+  `up NAME --gpu dri:/dev/dri/cardN`.
 - **`owner failed`.** Run `docker exec omanywhere-NAME journalctl -b -u omanywhere-owner`.
   Usually a key line isn't a key.
 - **The desktop restarts, or is `failed`.** Run `docker exec omanywhere-NAME journalctl -b -u

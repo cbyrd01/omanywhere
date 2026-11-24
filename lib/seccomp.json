@@ -371,7 +371,6 @@
     "signalfd4",
     "sigprocmask",
     "sigreturn",
-    "socketcall",
     "socketpair",
     "splice",
     "stat",
@@ -435,19 +434,6 @@
    "includes": {
     "minKernel": "4.8"
    }
-  },
-  {
-   "names": [
-    "socket"
-   ],
-   "action": "SCMP_ACT_ALLOW",
-   "args": [
-    {
-     "index": 0,
-     "value": 38,
-     "op": "SCMP_CMP_LT"
-    }
-   ]
   },
   {
    "names": [
@@ -922,6 +908,216 @@
      "CAP_PERFMON"
     ]
    }
+  },
+  {
+   "names": [
+    "socket"
+   ],
+   "action": "SCMP_ACT_ALLOW",
+   "comment": "omanywhere: Docker's families below 38, less netlink",
+   "args": [
+    {
+     "index": 0,
+     "value": 4294967280,
+     "valueTwo": 0,
+     "op": "SCMP_CMP_MASKED_EQ"
+    }
+   ]
+  },
+  {
+   "names": [
+    "socket"
+   ],
+   "action": "SCMP_ACT_ALLOW",
+   "comment": "omanywhere: Docker's families below 38, less netlink",
+   "args": [
+    {
+     "index": 0,
+     "value": 4294967295,
+     "valueTwo": 17,
+     "op": "SCMP_CMP_MASKED_EQ"
+    }
+   ]
+  },
+  {
+   "names": [
+    "socket"
+   ],
+   "action": "SCMP_ACT_ALLOW",
+   "comment": "omanywhere: Docker's families below 38, less netlink",
+   "args": [
+    {
+     "index": 0,
+     "value": 4294967294,
+     "valueTwo": 18,
+     "op": "SCMP_CMP_MASKED_EQ"
+    }
+   ]
+  },
+  {
+   "names": [
+    "socket"
+   ],
+   "action": "SCMP_ACT_ALLOW",
+   "comment": "omanywhere: Docker's families below 38, less netlink",
+   "args": [
+    {
+     "index": 0,
+     "value": 4294967292,
+     "valueTwo": 20,
+     "op": "SCMP_CMP_MASKED_EQ"
+    }
+   ]
+  },
+  {
+   "names": [
+    "socket"
+   ],
+   "action": "SCMP_ACT_ALLOW",
+   "comment": "omanywhere: Docker's families below 38, less netlink",
+   "args": [
+    {
+     "index": 0,
+     "value": 4294967288,
+     "valueTwo": 24,
+     "op": "SCMP_CMP_MASKED_EQ"
+    }
+   ]
+  },
+  {
+   "names": [
+    "socket"
+   ],
+   "action": "SCMP_ACT_ALLOW",
+   "comment": "omanywhere: Docker's families below 38, less netlink",
+   "args": [
+    {
+     "index": 0,
+     "value": 4294967292,
+     "valueTwo": 32,
+     "op": "SCMP_CMP_MASKED_EQ"
+    }
+   ]
+  },
+  {
+   "names": [
+    "socket"
+   ],
+   "action": "SCMP_ACT_ALLOW",
+   "comment": "omanywhere: Docker's families below 38, less netlink",
+   "args": [
+    {
+     "index": 0,
+     "value": 4294967294,
+     "valueTwo": 36,
+     "op": "SCMP_CMP_MASKED_EQ"
+    }
+   ]
+  },
+  {
+   "names": [
+    "socket"
+   ],
+   "action": "SCMP_ACT_ALLOW",
+   "comment": "omanywhere: netlink, but not NETLINK_NETFILTER (docs/usage.md)",
+   "args": [
+    {
+     "index": 0,
+     "value": 4294967295,
+     "valueTwo": 16,
+     "op": "SCMP_CMP_MASKED_EQ"
+    },
+    {
+     "index": 2,
+     "value": 4294967288,
+     "valueTwo": 0,
+     "op": "SCMP_CMP_MASKED_EQ"
+    }
+   ]
+  },
+  {
+   "names": [
+    "socket"
+   ],
+   "action": "SCMP_ACT_ALLOW",
+   "comment": "omanywhere: netlink, but not NETLINK_NETFILTER (docs/usage.md)",
+   "args": [
+    {
+     "index": 0,
+     "value": 4294967295,
+     "valueTwo": 16,
+     "op": "SCMP_CMP_MASKED_EQ"
+    },
+    {
+     "index": 2,
+     "value": 4294967292,
+     "valueTwo": 8,
+     "op": "SCMP_CMP_MASKED_EQ"
+    }
+   ]
+  },
+  {
+   "names": [
+    "socket"
+   ],
+   "action": "SCMP_ACT_ALLOW",
+   "comment": "omanywhere: netlink, but not NETLINK_NETFILTER (docs/usage.md)",
+   "args": [
+    {
+     "index": 0,
+     "value": 4294967295,
+     "valueTwo": 16,
+     "op": "SCMP_CMP_MASKED_EQ"
+    },
+    {
+     "index": 2,
+     "value": 4294967295,
+     "valueTwo": 13,
+     "op": "SCMP_CMP_MASKED_EQ"
+    }
+   ]
+  },
+  {
+   "names": [
+    "socket"
+   ],
+   "action": "SCMP_ACT_ALLOW",
+   "comment": "omanywhere: netlink, but not NETLINK_NETFILTER (docs/usage.md)",
+   "args": [
+    {
+     "index": 0,
+     "value": 4294967295,
+     "valueTwo": 16,
+     "op": "SCMP_CMP_MASKED_EQ"
+    },
+    {
+     "index": 2,
+     "value": 4294967294,
+     "valueTwo": 14,
+     "op": "SCMP_CMP_MASKED_EQ"
+    }
+   ]
+  },
+  {
+   "names": [
+    "socket"
+   ],
+   "action": "SCMP_ACT_ALLOW",
+   "comment": "omanywhere: netlink, but not NETLINK_NETFILTER (docs/usage.md)",
+   "args": [
+    {
+     "index": 0,
+     "value": 4294967295,
+     "valueTwo": 16,
+     "op": "SCMP_CMP_MASKED_EQ"
+    },
+    {
+     "index": 2,
+     "value": 4294967280,
+     "valueTwo": 16,
+     "op": "SCMP_CMP_MASKED_EQ"
+    }
+   ]
   },
   {
    "names": [
