@@ -1,0 +1,62 @@
+name: Image
+
+on:
+  pull_request:
+    paths: &paths
+      - image/**
+      - package/**
+      - lib/**
+      - bin/**
+      - tests/**
+      - scripts/**
+      - tools/**
+      - Makefile
+      - .dockerignore
+      - .github/workflows/image.yml
+  push:
+    branches: [main]
+    paths: *paths
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: image-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  image:
+    # Not ubuntu-latest (24.04, Docker 28.0.4): the run flags use
+    # --security-opt writable-cgroups=true, which needs Docker 29.
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The runner's 72 GB disk has 15 GB free, and the build needs about
+      # 30 GB (the 12 GB image, plus the multi-stage export's second copy). The
+      # first run died with "No space left on device". These preinstalled
+      # toolchains are unused here and make up about 31 GB, so delete them.
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /usr/local/.ghcup \
+            /usr/share/swift /opt/hostedtoolcache
+          df -h /
+          nproc
+          free -h
+          docker info
+      - name: Verify the Arch base image
+        run: make verify-base
+      - name: Build the image
+        run: make image
+      - name: Tests
+        run: make test-session-logic test-boot test-owner test-cli
+      - name: Disk after the build
+        if: always()
+        run: df -h / /mnt
+      - name: Kernel denials
+        if: failure()
+        run: sudo dmesg | grep -i -E 'apparmor|denied' | tail -50 || true
