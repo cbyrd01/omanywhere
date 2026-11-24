@@ -15,7 +15,8 @@ bin/omanywhere ssh-config desk >>~/.ssh/config
 gliff --headless omanywhere-desk
 ```
 
-`up` takes your ssh keys from your ssh agent (`ssh-add -L`), or from `--key FILE`. It picks
+`up` takes your ssh keys from your ssh agent (`ssh-add -L`), from `--key FILE`, or from GitHub
+with `--github USER`. It picks
 the GPU, starts the container, waits for systemd, and then reports what came up:
 
 ```
@@ -65,12 +66,14 @@ container, run `down NAME` and then `up NAME --option`.
 |---|---|---|
 | `--gpu auto\|none\|nvidia\|dri\|dri:/dev/dri/cardN` | `auto` | The DRM card the desktop runs on (see [CPU and GPU hosts](#cpu-and-gpu-hosts)). |
 | `--key FILE` | your ssh agent's keys | The public keys that may log in. `up` copies them to the config directory. |
+| `--github USER` | | Instead of `--key`: the public keys GitHub publishes for USER at `https://github.com/USER.keys`. `up` prints their fingerprints and copies them, as `--key` does. `OMANYWHERE_GITHUB` sets another server, such as GitHub Enterprise. |
 | `--listen ADDR` | `127.0.0.1` | The address ssh is published on, such as a tailnet address. |
 | `--drm-master allow` | off | Lets the desktop take DRM master of a GPU that no display server holds (see [DRM master](#drm-master)). |
 
-`--key` also works on a container that already exists. `up` rewrites its keys file, and the
-new keys take effect at the container's next start. Without `--key`, the keys from the first
-`up` stay.
+`--key` and `--github` also work on a container that already exists. `up` rewrites its keys
+file, and the new keys take effect at the container's next start. Without either, the keys
+from the first `up` stay: `--github` copies the keys once, so run it again after you change
+your keys on GitHub.
 
 ### What `up` makes
 

@@ -3,7 +3,8 @@
 # ssh. See docs/usage.md.
 #
 #   omanywhere up NAME [--gpu auto|none|nvidia|dri|dri:/dev/dri/cardN]
-#                      [--key FILE] [--listen ADDR] [--drm-master allow]
+#                      [--key FILE | --github USER] [--listen ADDR]
+#                      [--drm-master allow]
 #   omanywhere down NAME [--purge [--yes]]
 #   omanywhere ssh-config NAME
 #   omanywhere status NAME
@@ -13,6 +14,8 @@
 # Its password, keys and settings are kept in OMANYWHERE_CONFIG_DIR/NAME
 # (default ~/.config/omanywhere/NAME, mode 0700). OMANYWHERE_IMAGE is the image
 # (default omanywhere:dev, built by make image); it is never pulled.
+# OMANYWHERE_GITHUB is where --github fetches USER.keys from (default
+# https://github.com; a GitHub Enterprise server's URL, say).
 set -euo pipefail
 
 image=${OMANYWHERE_IMAGE:-omanywhere:dev}
@@ -31,8 +34,8 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/run-flags.bash"
 
 usage() {
   cat >&2 <<'EOF'
-usage: omanywhere up NAME [--gpu auto|none|nvidia|dri|dri:/dev/dri/cardN] [--key FILE] [--listen ADDR]
-                     [--drm-master allow]
+usage: omanywhere up NAME [--gpu auto|none|nvidia|dri|dri:/dev/dri/cardN]
+                     [--key FILE | --github USER] [--listen ADDR] [--drm-master allow]
        omanywhere down NAME [--purge [--yes]]
        omanywhere ssh-config NAME
        omanywhere status NAME
@@ -234,22 +237,40 @@ has_key() {
   grep -Eqv '^[[:space:]]*(#|$)' <<<"$1"
 }
 
-# new_keys KEYFILE: print the keys up should give the container: --key
-# KEYFILE's, else nothing if keys kept from an earlier up stay, else the ssh
-# agent's. Fails, saying so, when there is none.
+# github_keys USER: print the public keys GitHub publishes for USER at
+# https://github.com/USER.keys, as ssh-import-id and cloud-init fetch them,
+# and say which they are. HTTPS only, redirects included (file: is allowed for
+# an OMANYWHERE_GITHUB the caller sets, which tests/cli.sh uses).
+github_keys() {
+  local url=${OMANYWHERE_GITHUB:-https://github.com}/$1.keys keys fingerprints
+  keys=$(curl --fail --silent --show-error --location --proto =https,file --proto-redir =https \
+    --max-time 20 --max-filesize 1048576 "$url") || die "--github $1: couldn't fetch $url"
+  has_key "$keys" || die "no ssh key for GitHub user $1: $url lists none"
+  fingerprints=$(ssh-keygen -l -f /dev/stdin <<<"$keys" 2>&1) ||
+    die "--github $1: $url isn't a list of public keys: $fingerprints"
+  say "using the keys GitHub user $1 publishes ($url):"
+  echo "  ${fingerprints//$'\n'/$'\n'  }" >&2
+  printf '%s\n' "$keys"
+}
+
+# new_keys KEYFILE GITHUB_USER: print the keys up should give the container:
+# --key KEYFILE's or --github GITHUB_USER's, else nothing if keys kept from an
+# earlier up stay, else the ssh agent's. Fails, saying so, when there is none.
 new_keys() {
-  local keyfile=$1 keys
+  local keyfile=$1 github=$2 keys
   if [[ -n $keyfile ]]; then
     [[ -r $keyfile ]] || die "--key $keyfile: can't read it"
     keys=$(<"$keyfile")
     has_key "$keys" || die "no ssh key in $keyfile: it has no public key line"
+  elif [[ -n $github ]]; then
+    keys=$(github_keys "$github") || exit 1
   elif [[ -f $config/authorized_keys ]] && has_key "$(<"$config/authorized_keys")"; then
     return
   # A locked agent (1Password's, say) can wait for approval: don't wait long.
   elif keys=$(timeout 10 ssh-add -L 2>/dev/null) && has_key "$keys"; then
     say "using the keys in your ssh agent (ssh-add -L)"
   else
-    die "no ssh key: pass --key FILE (a public key, such as ~/.ssh/id_ed25519.pub), or add a key to your ssh agent (ssh-add -L lists none). ssh is the only way in."
+    die "no ssh key: pass --key FILE (a public key, such as ~/.ssh/id_ed25519.pub) or --github USER, or add a key to your ssh agent (ssh-add -L lists none). ssh is the only way in."
   fi
   printf '%s\n' "$keys"
 }
@@ -345,7 +366,7 @@ endpoint() {
 # --- Commands.
 
 cmd_up() {
-  local keyfile='' opt_gpu='' opt_listen='' opt_master='' state keys
+  local keyfile='' github='' opt_gpu='' opt_listen='' opt_master='' state keys
   set_name "${1:-}"
   shift
   while (($#)); do
@@ -357,6 +378,13 @@ cmd_up() {
       --key)
         [[ -n ${2:-} ]] || die "--key takes a public key file"
         keyfile=$2
+        ;;
+      --github)
+        # GitHub's own rule: letters, digits and single inner hyphens, up to
+        # 39 characters. It also keeps the URL's path to one component.
+        [[ ${2:-} =~ ^[A-Za-z0-9]([A-Za-z0-9]|-[A-Za-z0-9]){0,38}$ ]] ||
+          die "--github takes a GitHub user name, such as octocat"
+        github=$2
         ;;
       --listen)
         check listen "${2:-}" --listen
@@ -370,14 +398,15 @@ cmd_up() {
     esac
     shift 2
   done
+  [[ -z $keyfile || -z $github ]] || die "--key and --github both give the keys: pass one"
   docker image inspect "$image" >/dev/null 2>&1 || die "image $image not found: build it with make image"
 
   state=$(container_state)
   [[ $state == absent || -z $opt_gpu$opt_listen$opt_master ]] ||
     say "ignoring --gpu, --listen and --drm-master: $container exists, and they apply when it's made (omanywhere down $name, then up)"
   if [[ $state == running ]]; then
-    if [[ -n $keyfile ]]; then
-      keys=$(new_keys "$keyfile") || exit 1
+    if [[ -n $keyfile$github ]]; then
+      keys=$(new_keys "$keyfile" "$github") || exit 1
       write_keys "$keys"
       say "wrote the keys to $config/authorized_keys; they apply when $container next starts"
     fi
@@ -393,7 +422,7 @@ cmd_up() {
     drm_master=${opt_master:-$drm_master}
     gpu_args "$gpu"
   fi
-  keys=$(new_keys "$keyfile") || exit 1
+  keys=$(new_keys "$keyfile" "$github") || exit 1
   (umask 077 && mkdir -p "$config")
   write_keys "$keys"
   make_password

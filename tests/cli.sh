@@ -1,7 +1,8 @@
 #!/bin/bash
 # CLI test: bin/omanywhere's up, status, ssh-config and down, with no device.
 #   - up refuses a bad name or --gpu, and fails before it creates anything when
-#     it has no ssh key;
+#     it has no ssh key, including a --github user with none (GitHub stood in
+#     for by files, through OMANYWHERE_GITHUB);
 #   - the docker run arguments for each --gpu, and the warning for an NVIDIA
 #     card without NVIDIA's CDI device, from bin/omanywhere's own gpu_args
 #     against a made-up /dev/dri and sysfs (no desktop runs on a card here);
@@ -90,6 +91,21 @@ out=$(SSH_AUTH_SOCK=$tmp/no-agent "$cli" up "$name" --gpu none 2>&1) && fail "up
 [[ $out == *"no ssh key"* ]] || fail "up without a key did not say 'no ssh key': $out"
 printf '# only a comment\n\n' >"$tmp/empty.pub"
 fails "no ssh key" up "$name" --gpu none --key "$tmp/empty.pub"
+# --github: a user name GitHub allows, one of --key and --github, and a
+# fetch that gives keys.
+mkdir "$tmp/gh"
+: >"$tmp/gh/nokeys.keys"
+printf '<html>Not Found</html>\n' >"$tmp/gh/junk.keys"
+cp "$tmp/id_ed25519.pub" "$tmp/gh/octo-cat.keys"
+for bad in '' ../x a/b -lead trail- 'a--b' 'a b' "$(printf 'a%.0s' {1..40})"; do
+  fails "--github takes a GitHub user name" up "$name" --gpu none --github "$bad"
+done
+fails "--key and --github" up "$name" --gpu none --key "$tmp/id_ed25519.pub" --github octo-cat
+export OMANYWHERE_GITHUB=file://$tmp/gh
+fails "couldn't fetch file://$tmp/gh/nobody.keys" up "$name" --gpu none --github nobody
+fails "no ssh key for GitHub user nokeys" up "$name" --gpu none --github nokeys
+fails "isn't a list of public keys" up "$name" --gpu none --github junk
+unset OMANYWHERE_GITHUB
 exists container "$container" && fail "a failed up left a container"
 exists volume "$home_volume" && fail "a failed up left a volume"
 [[ ! -e $config ]] || fail "a failed up left $config"
@@ -244,6 +260,16 @@ out=$("$cli" up "$name" --key "$tmp/both.pub" --gpu dri 2>&1) || fail "up --key 
 [[ $(cexec "$container" cat /run/secrets/authorized_keys) == "$(<"$tmp/both.pub")" ]] ||
   fail "the container does not see the rewritten keys file"
 pass "up --key on a running container rewrote the keys in place, for the next start"
+
+# up --github does the same with the keys GitHub publishes, and shows them.
+# Both keys, as the steps below log in with the second.
+cp "$tmp/both.pub" "$tmp/gh/octo-cat.keys"
+fingerprint=$(ssh-keygen -l -f "$tmp/id_ed25519.pub" | cut -d' ' -f2)
+out=$(OMANYWHERE_GITHUB=file://$tmp/gh "$cli" up "$name" --github octo-cat 2>&1) || fail "up --github on a running container failed: $out"
+[[ $out == *"GitHub user octo-cat publishes"*"$fingerprint"* ]] || fail "up --github did not show the keys' fingerprints: $out"
+[[ $(<"$config/authorized_keys") == "$(<"$tmp/gh/octo-cat.keys")" ]] || fail "up --github did not write GitHub's keys"
+[[ $(stat -c %i "$config/authorized_keys") == "$inode" ]] || fail "authorized_keys was replaced, not rewritten in place"
+pass "up --github on a running container wrote the user's published keys, for the next start"
 
 # --- status.
 out=$("$cli" status "$name") || fail "status failed"
