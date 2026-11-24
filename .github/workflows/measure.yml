@@ -9,4 +9,4 @@ jobs:
     runs-on: ubuntu-26.04
     steps:
       - run: |
-          df -h; nproc; free -h; docker info; sudo aa-status | head -5; lsblk
+          lsblk; sudo du -xsh /usr/local/lib/android /usr/share/dotnet /opt/hostedtoolcache /opt/ghc /usr/local/share/boost /usr/local/julia* /opt/microsoft /usr/local/.ghcup /usr/share/swift /usr/local/lib/node_modules /home/runner/.rustup /home/runner/.cargo /opt/az /usr/lib/google-cloud-sdk /usr/local/n /opt/google /usr/lib/jvm 2>&1; sudo du -xh --max-depth=2 /usr /opt /home/runner 2>/dev/null | sort -rh | head -25
