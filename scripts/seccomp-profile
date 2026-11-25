@@ -1,10 +1,10 @@
 #!/bin/bash
 # Make lib/seccomp.json: Docker's default seccomp profile (moby, Apache License
-# 2.0) for TAG, plus one rule that allows clone and unshare with namespace
-# flags, and two cuts that keep netfilter out of reach of the namespaces that
-# rule allows: no netlink socket with protocol 12 (NETLINK_NETFILTER), and no
-# socketcall (i386), whose arguments seccomp can't see. docs/usage.md ("The run
-# flags") says why.
+# 2.0) for TAG, plus one rule that allows clone and unshare with any flags
+# (Docker's allows namespace flags only with CAP_SYS_ADMIN), and two cuts that
+# keep netfilter out of reach of the namespaces that rule allows: no netlink
+# socket with protocol 12 (NETLINK_NETFILTER), and no socketcall (i386), whose
+# arguments seccomp can't see. docs/usage.md ("The run flags") says why.
 #
 # Usage: scripts/seccomp-profile [TAG] (default docker-v29.9.2). Rerun it when
 # Docker's default profile changes, and commit the result.

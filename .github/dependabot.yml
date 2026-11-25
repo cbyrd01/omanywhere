@@ -1,0 +1,21 @@
+# Arch's base image in image/Containerfile (ARG BASE_IMAGE) is bumped by hand;
+# CONTRIBUTING.md says how.
+#
+# cooldown: Dependabot supports only default-days for these two ecosystems
+# (its semver-*-days keys don't apply to github-actions or docker), so every
+# update waits 7 days after release. Security updates skip the cooldown.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+  # tools/Containerfile's FROM.
+  - package-ecosystem: docker
+    directory: /tools
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7

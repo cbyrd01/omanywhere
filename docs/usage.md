@@ -144,8 +144,8 @@ Every container gets these flags, from `lib/run-flags.bash`. The tests use the s
 - `-p ADDR:PORT:22`.
 
 It never uses `--privileged`, `--cap-add`, a restart policy, or the host's network or cgroups.
-To run the image without `bin/omanywhere`, as from Compose, see the README's
-[interface](../README.md#the-containers-interface).
+To run the image without `bin/omanywhere`, as from Compose, see
+[below](#running-the-image-without-omanywhere).
 
 ### seccomp and namespaces
 
@@ -172,6 +172,43 @@ console output to `/dev/null`. With one, `docker logs omanywhere-NAME` shows:
 - the console's login prompt (`omanywhere-NAME login:`), from Omarchy's stock getty. Root's
   password is locked, and `docker attach` is already root-equivalent, so the prompt opens
   nothing. It's only noise in the logs.
+
+### Running the image without `omanywhere`
+
+To run the image some other way, such as from Compose, use the same flags. `up` runs the
+container much like this:
+
+```sh
+docker run -d --tty --cgroupns=private --security-opt writable-cgroups=true \
+  --security-opt seccomp=lib/seccomp.json \
+  --tmpfs /run --tmpfs /run/lock --tmpfs /tmp --tmpfs /run/secrets:mode=0700 \
+  -v NAME-home:/home -v NAME-state:/var/lib/omanywhere \
+  -v ./authorized_keys:/run/secrets/authorized_keys:ro [-v ./password:/run/secrets/password:ro] \
+  -p 127.0.0.1:2222:22 [--device nvidia.com/gpu=all | --device /dev/dri] omanywhere:dev
+```
+
+The `omanywhere` package (`package/omanywhere/`) makes the owner account at boot from these
+inputs (`package/omanywhere/owner` has the details):
+
+- `OMANYWHERE_USER`, `OMANYWHERE_UID`, `TZ`, and `OMANYWHERE_DRM_MASTER`, with `docker run -e`;
+- the ssh keys: the file `/run/secrets/authorized_keys`, or `OMANYWHERE_AUTHORIZED_KEYS`. With
+  a password and no key, ssh takes the password instead; with keys, keys only;
+- the optional password for sudo, polkit and the lock screen: only the file
+  `/run/secrets/password`, bound read-only inside the root-only `/run/secrets` tmpfs as above
+  (leave the `-v ./password:...` out for none). The owner unit fails if `OMANYWHERE_PASSWORD` is
+  in the environment, where `docker inspect` and the host's process list would show it. With no
+  password file, the owner's password is locked, sudo and polkit ask the owner for none, and
+  Omarchy's idle lock is turned off in the owner's `shell.json` (restored when a password
+  comes).
+
+The keys given to the container are authoritative, and are set again on every boot. sshd
+reads them from `/run/omanywhere/authorized_keys/`. Keys that the owner adds to
+`~/.ssh/authorized_keys` themselves are kept, and log in too, except on a password-only
+desktop, where ssh takes only the password.
+
+Use named volumes for `/home` and `/var/lib/omanywhere`, which Docker fills from the image. A
+bind-mounted state directory starts empty, so its first boot can't keep a machine-id and is
+degraded. From the second boot on it behaves like a named volume.
 
 ## ssh
 
@@ -345,7 +382,9 @@ modeset fails and its monitor stays at 0x0, so the session passes over such a ca
 next free one, and says why when none is left. On a host with a desktop of its own, that process
 is the host's desktop: see the udev rule under [CPU and GPU hosts](#cpu-and-gpu-hosts).
 
-The guard covers only Hyprland's start. The owner is in the card's group, so any process in
+The session checks master again just before it starts Hyprland, but master can still change
+hands in the moment before Hyprland opens the card, and that gap can't be closed while Hyprland
+opens the card itself. The guard also covers only Hyprland's start. The owner is in the card's group, so any process in
 the container can open the card. While no host display server holds master (at a text
 console, logged out, or before the display manager starts), that process becomes master and
 locks the host's display out until it exits. Don't run untrusted code in a container on a GPU

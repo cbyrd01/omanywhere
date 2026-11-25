@@ -32,10 +32,13 @@ RUN --mount=type=cache,target=/var/cache/pacman/pkg,sharing=locked \
     pacman -Syu --noconfirm --needed base-devel
 
 # --nodeps: omanywhere depends on omarchy, which this stage doesn't install;
-# the system stage's pacman -U resolves the dependencies.
+# the system stage's pacman -U resolves the dependencies. The repository's
+# LICENSE joins the package's sources.
 RUN --mount=type=bind,source=package/omanywhere,target=/run/omanywhere-src \
+    --mount=type=bind,source=LICENSE,target=/run/omanywhere-license \
     install -d -o nobody -g nobody /build /out && \
     cp -r /run/omanywhere-src/. /build/ && \
+    cp /run/omanywhere-license /build/LICENSE && \
     chown -R nobody:nobody /build && \
     cd /build && \
     runuser -u nobody -- env PKGDEST=/out makepkg --nodeps --noconfirm
