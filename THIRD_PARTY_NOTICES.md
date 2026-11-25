@@ -1,8 +1,7 @@
 # Third-party notices
 
-Omanywhere's own code is under the MIT License ([LICENSE](LICENSE)). That license covers only
-the code written for this project. The files below come from other projects and keep their own
-licenses.
+Omanywhere's own code is under the MIT License ([LICENSE](LICENSE)). The files below come from
+other projects and keep their own licenses.
 
 ## `lib/seccomp.json`
 
@@ -44,5 +43,4 @@ are checked.
 packages unmodified. Each package keeps its own license, found under `/usr/share/licenses` in
 the image. This repository redistributes none of them.
 
-Publishing a built image would redistribute those packages, GPL binaries among them, and bring
-the obligation to offer their source.
+Publishing a built image would add the obligation to offer the source of its GPL packages.

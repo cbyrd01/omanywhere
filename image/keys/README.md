@@ -5,9 +5,7 @@ files (`pacman-key --populate-from`), copied unchanged from `/usr/share/pacman/k
 the signature-verified package `omarchy-keyring 20251027-1`, on an Omarchy host, on
 2026-11-23. They match the sha256s that try-omarchy publishes for the same files.
 
-License: GPL-3.0-or-later, as the `omarchy-keyring` package declares (source:
-[omacom/omarchy-pkgs](https://github.com/omacom/omarchy-pkgs), `pkgbuilds/omarchy-keyring`).
-See [LICENSES/GPL-3.0-or-later.txt](../../LICENSES/GPL-3.0-or-later.txt) and
+License: GPL-3.0-or-later, as the `omarchy-keyring` package declares; see
 [THIRD_PARTY_NOTICES.md](../../THIRD_PARTY_NOTICES.md).
 
 | File              | sha256                                                             |
