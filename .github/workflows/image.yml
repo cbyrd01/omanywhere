@@ -11,6 +11,7 @@ on:
       - scripts/**
       - tools/**
       - Makefile
+      - LICENSE
       - .dockerignore
       - .github/workflows/image.yml
   push:

@@ -4,12 +4,19 @@ Stock [Omarchy](https://omarchy.org) as a headless desktop in a container, reach
 [gliff](https://github.com/omacom/gliff), on hosts with a GPU and on hosts with only a CPU.
 Think LinuxServer Webtop or Kasm Workspaces, but the desktop is an unmodified Omarchy.
 
-An unofficial community project, not affiliated with Omacom or Omarchy.
+An unofficial community project based on Arch Linux. It is not affiliated with or endorsed by
+Omacom, Omarchy, Arch Linux, Hyprland or Docker. Omarchy is a pending trademark of its owners.
 
 ## Status
 
-Version 0: the image, the owner account and ssh, the desktop session on a GPU or a vkms card,
-and the `omanywhere` command. CI builds the image and runs the tests that need no device.
+Version 0, experimental: the image, the owner account and ssh, the desktop session on a GPU or
+a vkms card, and the `omanywhere` command. CI builds the image and runs the tests that need no
+device.
+
+There is no prebuilt image. `make image` builds it locally: the image is about 12 GB, and the
+build needs about 30 GB of free disk. The host needs Docker 29 or newer and `make`. To connect,
+you need a gliff client: [gliff](https://github.com/omacom/gliff) itself (Omarchy installs it
+with its base packages), or another such as [Glifftop](https://github.com/cbyrd01/glifftop).
 
 ## Use
 
@@ -138,6 +145,8 @@ behaves like a named volume.
 ## Development
 
 Everything runs in containers; the host needs only Docker and `make`.
+[CONTRIBUTING.md](CONTRIBUTING.md) says how to send a change, and [SECURITY.md](SECURITY.md)
+how to report a vulnerability.
 
 ```sh
 make hooks   # once per clone: gitleaks scans each commit's staged changes
@@ -163,3 +172,16 @@ image's `package` stage.
 
 The tools (cosign, gitleaks, shellcheck) come from Arch Linux's signed repositories,
 installed in a small image built from `tools/Containerfile`.
+
+## License and credits
+
+Omanywhere is under the MIT License ([LICENSE](LICENSE)). It is built on:
+
+- [Omarchy](https://github.com/omacom/omarchy) (MIT);
+- [gliff](https://github.com/omacom/gliff) (MIT);
+- [Hyprland](https://github.com/hyprwm/Hyprland) (BSD-3-Clause);
+- Arch Linux's official image.
+
+The approach follows [try-omarchy](https://github.com/omacom/try-omarchy). The seccomp profile
+derives from Moby's (Apache-2.0). [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) lists the
+third-party files in this repository and their licenses.

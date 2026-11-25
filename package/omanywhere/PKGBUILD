@@ -2,15 +2,15 @@
 # a file another package owns: it adds its own unit, script, drop-ins, preset,
 # tmpfiles entry, sshd_config.d file and sudoers.d file. (pacman.conf's one
 # extra line is image configuration, set in image/Containerfile.) Built from
-# these local files by image/Containerfile's package stage; nothing is
-# downloaded.
+# these local files by image/Containerfile's package stage, which also copies
+# in the repository's LICENSE; nothing is downloaded.
 pkgname=omanywhere
 pkgver=0.1.0
 pkgrel=1
 pkgdesc='Run stock Omarchy as a headless container desktop: owner account, ssh, desktop session, container drop-ins'
 arch=(any)
 url='https://github.com/cbyrd01/omanywhere'
-license=(LicenseRef-unspecified)
+license=(MIT)
 depends=(omarchy openssh sudo)
 backup=(etc/ssh/sshd_config.d/10-omanywhere.conf etc/sudoers.d/00-omanywhere-wheel)
 install=omanywhere.install
@@ -29,9 +29,10 @@ source=(
   omanywhere-session.service
   hyprland.lua
   polkit.conf
+  LICENSE
 )
 # Local files in this repository, which git already pins.
-sha256sums=(SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP)
+sha256sums=(SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP)
 
 check() {
   visudo -cf 00-omanywhere-wheel
@@ -56,6 +57,7 @@ package() {
   install -dm0750 "$pkgdir/etc/sudoers.d" # as the sudo package has it
   install -m0440 00-omanywhere-wheel "$pkgdir/etc/sudoers.d/00-omanywhere-wheel"
   install -dm0755 "$pkgdir/var/lib/omanywhere" "$pkgdir/var/lib/omanywhere/ssh"
+  install -Dm0644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 
   # One drop-in per unit in container-units, its reason as the comment.
   while read -r unit reason; do

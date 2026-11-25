@@ -17,8 +17,8 @@
 # Usage: tests/gliff.sh (IMAGE defaults to omanywhere:dev).
 # OMANYWHERE_TEST_GPU (required) is bin/omanywhere up's --gpu: auto, nvidia
 # or dri. Each leg needs a card the desktop can run on:
-#   auto or nvidia on a host with NVIDIA's CDI spec (odyssey: the host's
-#     Hyprland holds DRM master, so the container never takes it)
+#   auto or nvidia on a host with NVIDIA's CDI spec, such as a host whose
+#     own Hyprland holds DRM master, so the container never takes it
 #   auto or dri in tests/vm's KVM guest, on its vkms card (the CPU-only leg)
 # OMANYWHERE_TEST_EXPECT_VIDEO, when set (gpu or cpu), is the GLIFF_VIDEO the
 # ssh session must get, and the video pipeline gliff-server must use.

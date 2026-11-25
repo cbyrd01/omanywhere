@@ -1,5 +1,5 @@
 # The build context is the repository root (make image); the build reads only
-# image/ and package/.
+# image/, package/ and LICENSE.
 .git
 .cache
 notes

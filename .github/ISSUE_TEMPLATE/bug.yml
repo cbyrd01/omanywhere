@@ -1,0 +1,45 @@
+name: Bug report
+description: Something in the image, the container or bin/omanywhere doesn't work.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Don't paste `authorized_keys`, password files, private keys or tokens. Check logs for
+        them before you paste. Report a security problem privately instead (SECURITY.md).
+  - type: input
+    id: gpu
+    attributes:
+      label: Host GPU
+      description: The host's GPU and driver, or "none" for a CPU-only host (vkms).
+      placeholder: AMD Radeon RX 7600 (amdgpu), or none
+    validations:
+      required: true
+  - type: input
+    id: docker
+    attributes:
+      label: Docker version
+      description: The output of `docker version --format '{{.Server.Version}}'`.
+    validations:
+      required: true
+  - type: textarea
+    id: status
+    attributes:
+      label: omanywhere status
+      description: The output of `bin/omanywhere status NAME`.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: docker logs
+      description: The relevant part of `docker logs omanywhere-NAME`.
+      render: text
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you ran, what you expected, and what happened instead.
+    validations:
+      required: true
