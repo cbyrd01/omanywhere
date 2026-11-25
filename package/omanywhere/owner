@@ -55,9 +55,19 @@
 # once per home, not once per container.
 set -euo pipefail
 
+# When stderr is the journal (JOURNAL_STREAM names its device and inode), a
+# <N> prefix sets a line's level, and journald forwards warnings and worse to
+# docker logs (MaxLevelConsole in /usr/lib/systemd/journald.conf.d/omanywhere.conf).
+journal=''
+[[ -z ${JOURNAL_STREAM:-} || $(stat -L -c %d:%i "/proc/$$/fd/2" 2>/dev/null) != "$JOURNAL_STREAM" ]] || journal=1
+
 fail() {
-  echo "$*" >&2
+  echo "${journal:+<3>}$*" >&2
   exit 1
+}
+
+warn() {
+  echo "${journal:+<4>}Warning: $*" >&2
 }
 
 # input NAME DEFAULT [SHORT]: the input's value (see the top of this file).
@@ -109,21 +119,21 @@ dri_groups() {
     if ((gid == 0)); then
       # A node in root's group the owner can only open if everyone may.
       (((8#$mode & 8#006) == 8#006)) ||
-        echo "Warning: DRM node $node is in root's group (mode $mode), which the owner never gets, so the desktop can't open it; give the container the node with a group of its own (the host's video or render group)" >&2
+        warn "DRM node $node is in root's group (mode $mode), which the owner never gets, so the desktop can't open it; give the container the node with a group of its own (the host's video or render group)"
       continue
     fi
     dev=${dev:-$(stat -c %d /dev)}
     if [[ $ndev != "$dev" ]]; then
-      echo "Warning: DRM node $node is mounted in from the host, so it keeps host gid $gid and the desktop can't open it; pass the card with --device" >&2
+      warn "DRM node $node is mounted in from the host, so it keeps host gid $gid and the desktop can't open it; pass the card with --device"
       continue
     fi
     [[ $node == /dev/dri/card* ]] && group=video || group=render
     if ! chgrp "$group" "$node"; then
-      echo "Warning: can't put DRM node $node in group $group; the desktop can't open it" >&2
+      warn "can't put DRM node $node in group $group; the desktop can't open it"
       continue
     fi
     (((8#$mode & 8#060) == 8#060)) ||
-      echo "Warning: DRM node $node has mode $mode, with no read and write for its group; the desktop can't open it" >&2
+      warn "DRM node $node has mode $mode, with no read and write for its group; the desktop can't open it"
     echo "DRM node $node: host gid $gid, group $group here" >&2
     [[ " ${groups[*]} " == *" $group "* ]] || groups+=("$group")
   done
@@ -285,8 +295,8 @@ case $idle in
   off) echo "Set idle.lock to 0 in ~/.config/omarchy/shell.json: with no password the lock screen can't be unlocked" ;;
   restored) echo "Removed idle.lock from ~/.config/omarchy/shell.json, which this script set to 0 without a password: Omarchy's default applies again" ;;
   kept) echo "Left idle.lock in ~/.config/omarchy/shell.json as the owner set it" ;;
-  missing) echo "Warning: ~/.config/omarchy/shell.json does not exist, so idle.lock stays as Omarchy has it" >&2 ;;
-  unreadable | failed) echo "Warning: ~/.config/omarchy/shell.json can't be read or changed, so idle.lock stays as it is" >&2 ;;
+  missing) warn "the file ~/.config/omarchy/shell.json does not exist, so idle.lock stays as Omarchy has it" ;;
+  unreadable | failed) warn "the file ~/.config/omarchy/shell.json can't be read or changed, so idle.lock stays as it is" ;;
 esac
 
 # omarchy-refresh-pacman (behind omarchy-channel-set too) puts Omarchy's
@@ -302,7 +312,7 @@ fi
 # systemd writes the machine-id through /etc/machine-id into the state volume
 # when it finds an empty file there (see /usr/lib/tmpfiles.d/omanywhere.conf).
 if [[ ! -s /var/lib/omanywhere/machine-id ]]; then
-  echo "Warning: the state volume had no machine-id file at boot, so this boot's machine-id isn't kept; the next boot's will be" >&2
+  warn "the state volume had no machine-id file at boot, so this boot's machine-id isn't kept; the next boot's will be"
 fi
 
 # The desktop session runs as the owner, and takes OMANYWHERE_DRM_MASTER from

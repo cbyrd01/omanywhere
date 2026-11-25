@@ -175,12 +175,21 @@ local off, handlers = {}, {}
 hl = {
   monitor = function(rule) if rule.disabled then off[rule.output] = true end end,
   get_monitors = function()
-    -- At a reload: one of the card's, one plugged in since, and Hyprland's.
-    return { { name = "DP-2" }, { name = "DP-9" }, { name = "HEADLESS-1" }, { name = "gliff-1525562" } }
+    -- At a reload: Hyprland's outputs and one host output that is on. A
+    -- disabled output isn't listed.
+    return { { name = "DP-2" }, { name = "HEADLESS-1" }, { name = "gliff-1525562" } }
   end,
   on = function(event, handler) handlers[event] = handler end,
   exec_cmd = function() end,
 }
+-- sysfs at a reload: the card's connectors, an MST stream made since boot
+-- (DP-9), and another card's, which stays on.
+io.popen = function(command)
+  assert(command == "ls /sys/class/drm", "unexpected command: " .. command)
+  local entries = { "card1", "card1-DP-1", "card1-DP-2", "card1-DP-3", "card1-DP-9", "card10", "card10-HDMI-A-1",
+    "renderD128", "version" }
+  return { lines = function() local i = 0 return function() i = i + 1 return entries[i] end end, close = function() end }
+end
 LUA
 cat >"$tmp/after.lua" <<'LUA'
 for _, name in ipairs({ "DP-4", "HDMI-A-2", "eDP-1", "DVI-I-1", "DIN-1", "Virtual-3", "Writeback-1",

@@ -168,7 +168,7 @@ built() {
     gpu_args "$4"
     echo "devices: ${devices[*]}"' bash "$cli" "$fake" "$2" "$1" 2>&1 | sed '/^devices:/!s/^/said: /'
 }
-nvidia_warning="said: omanywhere: warning: /dev/dri/card2 is an NVIDIA card, and Docker has no NVIDIA CDI device (nvidia.com/gpu=all): the desktop can't use it, as NVIDIA's GBM backend comes only through CDI. Install nvidia-container-toolkit and use --gpu nvidia (see docs/usage.md)"
+nvidia_warning="said: omanywhere: warning: /dev/dri/card2 is an NVIDIA card, which the desktop can't use through /dev/dri alone, as NVIDIA's GBM backend comes only through CDI (nvidia.com/gpu=all). Install nvidia-container-toolkit and use --gpu nvidia (see docs/usage.md)"
 expect_built() {
   local got
   got=$(built "$1" "$2")
@@ -177,7 +177,9 @@ expect_built() {
 expect_built dri:/dev/dri/card0 no "devices: --device /dev/dri/card0"
 expect_built dri:/dev/dri/card1 no "devices: --device /dev/dri/card1 --device /dev/dri/renderD128"
 expect_built dri:/dev/dri/card2 no "$nvidia_warning"$'\n'"devices: --device /dev/dri/card2 --device /dev/dri/renderD129"
-expect_built dri:/dev/dri/card2 yes "devices: --device /dev/dri/card2 --device /dev/dri/renderD129"
+nvidia_cdi_warning="said: omanywhere: warning: /dev/dri/card2 is an NVIDIA card, which the desktop can't use through /dev/dri alone, as NVIDIA's GBM backend comes only through CDI (nvidia.com/gpu=all). Docker has its CDI device: use --gpu nvidia (or auto)"
+expect_built dri:/dev/dri/card2 yes "$nvidia_cdi_warning"$'\n'"devices: --device /dev/dri/card2 --device /dev/dri/renderD129"
+expect_built dri yes "$nvidia_cdi_warning"$'\n'"devices: --device /dev/dri"
 expect_built dri no "$nvidia_warning"$'\n'"devices: --device /dev/dri"
 expect_built auto no "$nvidia_warning"$'\n'"devices: --device /dev/dri"
 expect_built auto yes "devices: --device nvidia.com/gpu=all"

@@ -78,6 +78,7 @@ Changed or added:
 | Change | From | Why |
 |---|---|---|
 | polkit gets `SystemCallFilter=~capset` | Arch | **Workaround** for systemd#34565: a unit with `User=` and a syscall filter fails without `CAP_SYS_ADMIN`, so polkit wouldn't start. The line only tightens polkit's filter. |
+| journald forwards warnings and errors to the console (`ForwardToConsole=yes`, `MaxLevelConsole=warning`) | Arch | The console is `docker logs`, so failures show there without the desktop's info noise. |
 | sshd requires and starts after `omanywhere-owner` | Arch | ssh starts once the owner exists. |
 | `sshdgenkeys` makes one ed25519 key in `/var/lib/omanywhere/ssh` | Arch | The host key lives in the state volume. |
 | `omanywhere-owner.service` | new | Makes the owner account each boot (see [Accounts](#accounts-sudo-and-polkit)). |

@@ -92,7 +92,39 @@ cexec "$name" systemctl stop sshd.service
 out=$(cexec "$name" /usr/lib/omanywhere/health) && fail "the healthcheck passed with sshd stopped: $out"
 [[ $out == "sshd is inactive" ]] || fail "the healthcheck said, with sshd stopped: $out"
 cexec "$name" systemctl start sshd.service
-pass "healthcheck: healthy with no card, fails when sshd stops"
+cexec "$name" systemd-run -q --wait --unit=omanywhere-test-fail.service false || true
+out=$(cexec "$name" /usr/lib/omanywhere/health) && fail "the healthcheck passed with a failed unit: $out"
+[[ $out == "systemd is degraded: omanywhere-test-fail.service failed" ]] ||
+  fail "the healthcheck said, with a failed unit: $out"
+cexec "$name" systemctl reset-failed omanywhere-test-fail.service
+pass "healthcheck: healthy with no card, fails when sshd stops or a unit fails, naming it"
+
+# journald forwards warnings, not info, to the console, which is docker logs.
+cexec "$name" logger -t omanywhere-test -p user.warning "forwarded warning $$"
+cexec "$name" logger -t omanywhere-test -p user.info "kept info $$"
+for _ in {1..20}; do
+  logs=$(docker logs "$name" 2>&1)
+  [[ $logs == *"forwarded warning $$"* ]] && break
+  sleep 0.5
+done
+[[ $logs == *"forwarded warning $$"* ]] || fail "a journal warning is not in docker logs"
+[[ $logs != *"kept info $$"* ]] || fail "a journal info line is in docker logs"
+pass "docker logs carries the journal's warnings, not its info lines"
+
+# The owner script's warnings and failures carry journald's <4> or <3>
+# prefix under systemd, so they reach docker logs too. In a unit without the
+# container's environment it finds no key and fails.
+cexec "$name" systemd-run -q --wait --unit=omanywhere-test-owner.service /usr/lib/omanywhere/owner &&
+  fail "the owner script succeeded with no key and no password"
+cexec "$name" systemctl reset-failed omanywhere-test-owner.service
+for _ in {1..20}; do
+  logs=$(docker logs "$name" 2>&1)
+  [[ $logs == *"no authorized key and no password"* ]] && break
+  sleep 0.5
+done
+[[ $logs == *"no authorized key and no password"* ]] || fail "the owner's failure is not in docker logs"
+[[ $logs != *"<3>"* ]] || fail "docker logs shows journald's <3> prefix"
+pass "docker logs carries the owner's failures"
 
 # Every failed (or restart-looping) unit must be in the allow list, which
 # carries a reason for each.
