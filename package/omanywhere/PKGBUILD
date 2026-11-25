@@ -30,10 +30,11 @@ source=(
   hyprland.lua
   polkit.conf
   health
+  journald.conf
   LICENSE
 )
 # Local files in this repository, which git already pins.
-sha256sums=(SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP)
+sha256sums=(SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP)
 
 check() {
   visudo -cf 00-omanywhere-wheel
@@ -51,6 +52,7 @@ package() {
   install -Dm0644 omanywhere-session.service "$pkgdir/$units/omanywhere-session.service"
   install -Dm0644 hyprland.lua "$pkgdir/usr/share/omanywhere/hypr/hyprland.lua"
   install -Dm0644 polkit.conf "$pkgdir/$units/polkit.service.d/omanywhere.conf"
+  install -Dm0644 journald.conf "$pkgdir/usr/lib/systemd/journald.conf.d/omanywhere.conf"
   install -Dm0644 omanywhere.preset "$pkgdir/usr/lib/systemd/system-preset/80-omanywhere.preset"
   install -Dm0644 omanywhere.tmpfiles "$pkgdir/usr/lib/tmpfiles.d/omanywhere.conf"
   install -Dm0644 10-omanywhere.conf "$pkgdir/etc/ssh/sshd_config.d/10-omanywhere.conf"

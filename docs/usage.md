@@ -191,9 +191,16 @@ console output to `/dev/null`. With one, `docker logs omanywhere-NAME` shows:
 
 - the boot;
 - the desktop session's lines, including why it was skipped or refused;
+- the journal's warnings and errors, from any unit. The rest of the journal stays in the
+  container: `docker exec omanywhere-NAME journalctl`;
 - the console's login prompt (`omanywhere-NAME login:`), from Omarchy's stock getty. Root's
   password is locked, and `docker attach` is already root-equivalent, so the prompt opens
   nothing. It's only noise in the logs.
+
+Docker's default log driver, `json-file`, keeps a container's logs without a size limit, and
+`omanywhere` leaves the choice of driver to the host. To cap them, set rotation in
+`/etc/docker/daemon.json`, such as `"log-opts": {"max-size": "10m", "max-file": "3"}`, then
+restart Docker. It applies to containers made after that.
 
 ### Running the image without `omanywhere`
 

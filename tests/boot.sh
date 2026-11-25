@@ -92,7 +92,24 @@ cexec "$name" systemctl stop sshd.service
 out=$(cexec "$name" /usr/lib/omanywhere/health) && fail "the healthcheck passed with sshd stopped: $out"
 [[ $out == "sshd is inactive" ]] || fail "the healthcheck said, with sshd stopped: $out"
 cexec "$name" systemctl start sshd.service
-pass "healthcheck: healthy with no card, fails when sshd stops"
+cexec "$name" systemd-run -q --wait --unit=omanywhere-test-fail.service false || true
+out=$(cexec "$name" /usr/lib/omanywhere/health) && fail "the healthcheck passed with a failed unit: $out"
+[[ $out == "systemd is degraded: omanywhere-test-fail.service failed" ]] ||
+  fail "the healthcheck said, with a failed unit: $out"
+cexec "$name" systemctl reset-failed omanywhere-test-fail.service
+pass "healthcheck: healthy with no card, fails when sshd stops or a unit fails, naming it"
+
+# journald forwards warnings, not info, to the console, which is docker logs.
+cexec "$name" logger -t omanywhere-test -p user.warning "forwarded warning $$"
+cexec "$name" logger -t omanywhere-test -p user.info "kept info $$"
+for _ in {1..20}; do
+  logs=$(docker logs "$name" 2>&1)
+  [[ $logs == *"forwarded warning $$"* ]] && break
+  sleep 0.5
+done
+[[ $logs == *"forwarded warning $$"* ]] || fail "a journal warning is not in docker logs"
+[[ $logs != *"kept info $$"* ]] || fail "a journal info line is in docker logs"
+pass "docker logs carries the journal's warnings, not its info lines"
 
 # Every failed (or restart-looping) unit must be in the allow list, which
 # carries a reason for each.

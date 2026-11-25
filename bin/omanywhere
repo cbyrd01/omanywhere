@@ -182,18 +182,20 @@ remake_if_card_moved() {
   image=$made_from state=absent remake=1 opt_gpu='' opt_listen='' opt_master='' opt_password=''
 }
 
-# warn_nvidia CARD...: one warning if any of the host's cards (cardN) is
-# NVIDIA's and Docker has no NVIDIA CDI device. The desktop session can't use
-# such a card: NVIDIA's GBM backend, which Hyprland allocates through, comes
-# only with the CDI spec (see classify in /usr/lib/omanywhere/session).
+# warn_nvidia CARD...: one warning if any of the cards (cardN) that --gpu dri
+# passes is NVIDIA's. The desktop session can't use such a card through
+# /dev/dri alone: NVIDIA's GBM backend, which Hyprland allocates through,
+# comes only with the CDI spec (see classify in /usr/lib/omanywhere/session).
 warn_nvidia() {
   local card driver nvidia=()
   for card; do
     driver=$(readlink -f "$drm_class/$card/device/driver" 2>/dev/null) || driver=
     [[ ${driver##*/} != nvidia ]] || nvidia+=("/dev/dri/$card")
   done
-  ((${#nvidia[@]})) && ! cdi_gpu || return 0
-  say "warning: ${nvidia[*]} is an NVIDIA card, and Docker has no NVIDIA CDI device (nvidia.com/gpu=all): the desktop can't use it, as NVIDIA's GBM backend comes only through CDI. Install nvidia-container-toolkit and use --gpu nvidia (see docs/usage.md)"
+  ((${#nvidia[@]})) || return 0
+  local fix="Install nvidia-container-toolkit and use --gpu nvidia (see docs/usage.md)"
+  ! cdi_gpu || fix="Docker has its CDI device: use --gpu nvidia (or auto)"
+  say "warning: ${nvidia[*]} is an NVIDIA card, which the desktop can't use through /dev/dri alone, as NVIDIA's GBM backend comes only through CDI (nvidia.com/gpu=all). $fix"
 }
 
 # gpu_args MODE: set devices (docker run arguments) and gpu_note for --gpu MODE.
