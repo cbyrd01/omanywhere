@@ -93,15 +93,16 @@ Changed or added:
 | The owner's groups: `wheel`, the groups Omarchy records, less `docker`, and `input` only when a package needs it | Omarchy | No Docker socket in the container. |
 | Each DRM node runc made in the container's `/dev` moves to the image's `video` (card) or `render` (renderD) group, and the owner joins those | Omarchy | Hyprland opens the card through the owner's groups, with no logind device handoff. The node's host gid could be any group here, such as `empower`. |
 | `/etc/sudoers.d/00-omanywhere-wheel`: `%wheel ALL=(ALL:ALL) ALL` | Omarchy | Omarchy's installer writes its own copy. Sorting first keeps Omarchy's narrower `NOPASSWD` rules in force. |
-| The password comes only from a secret file, `/run/secrets/OMANYWHERE_PASSWORD` or `/run/secrets/password`. With none, the account is locked | Omarchy | A password in the environment shows in `docker inspect`. |
-| `--sudo nopasswd` writes `/etc/sudoers.d/90-omanywhere-nopasswd`, and its absence removes it | Omarchy | Opt-in, for an owner with no password. |
+| The password is optional, and comes only from a secret file, `/run/secrets/OMANYWHERE_PASSWORD` or `/run/secrets/password`. With none, the account is locked | Omarchy | A password in the environment shows in `docker inspect`. `omanywhere up` makes none unless asked (`--password`). |
+| With no password, `/etc/sudoers.d/90-omanywhere-nopasswd` (`USER ALL=(ALL:ALL) NOPASSWD: ALL`) and `/etc/polkit-1/rules.d/49-omanywhere-nopasswd.rules` (the owner is always authorized). With a password, each boot removes both | Omarchy | A prompt for a password that doesn't exist is a dead end, for sudo and for the pkexec that Omarchy uses for DNS, locale and more. |
 | `TZ` sets the timezone through `systemd-firstboot` | Arch | Opt-in. |
 
 ## ssh
 
 | Change | From | Why |
 |---|---|---|
-| `/etc/ssh/sshd_config.d/10-omanywhere.conf`: keys only, no root login | Arch | ssh is the only way in. sshd allows passwords by default, and keeps the first value it reads, so this file sorts first. |
+| `/etc/ssh/sshd_config.d/10-omanywhere.conf`: keys only, never root. It includes `/run/omanywhere/sshd/password.conf` before its own lines | Arch | ssh is the only way in. sshd allows passwords by default, and keeps the first value it reads, so this file sorts first. |
+| `/run/omanywhere/sshd/password.conf` (`AllowUsers` the owner, `PasswordAuthentication yes`, `AuthenticationMethods password`), written each boot only when there is a password and no key, and removed otherwise | Arch | A password-only desktop (`up --password` with no key). It sits first because sshd keeps the first value it reads. With any key, ssh stays keys only, and root never logs in. |
 | `AuthorizedKeysFile` adds `/run/omanywhere/authorized_keys/%u`, rewritten each boot from the container's keys | Arch | The container's keys sit beside the owner's own file. |
 | `HostKey /var/lib/omanywhere/ssh/ssh_host_ed25519_key` | Arch | The host key survives a recreate. |
 | `Include /run/omanywhere/sshd/*.conf`, which sets `GLIFF_VIDEO` and `GLIFF_CAPTURE` for the card in use | Arch | **Workaround.** gliff-server's default `--video gpu` errors on a card with no render node instead of falling back to the CPU. |
@@ -116,6 +117,7 @@ Changed or added:
 | `LIBSEAT_BACKEND=noop` | Omarchy | **Workaround.** With no udev in the container, logind's `TakeDevice` answers `ENODEV`. |
 | `HYPRLAND_CONFIG` points at `/usr/share/omanywhere/hypr/hyprland.lua`, which loads the owner's `~/.config/hypr/hyprland.lua` and then the container's rules | Omarchy | The owner's and Omarchy's files stay unedited. |
 | On a GPU, the container's rules turn off every connector of the card and draw on a headless output | Omarchy | Those connectors are the host's monitors. |
+| With no password, `.idle.lock` is set to `0` in the owner's `~/.config/omarchy/shell.json` at each boot, and logged when it changes. A marker, `~/.local/state/omanywhere/idle-lock-off`, records it, so a later boot with a password deletes the line again (unless the owner changed it) | Omarchy | Omarchy's shell locks the screen after `idle.lock` seconds (300 by default), and with no password nothing can unlock it. The owner may change the value back. The screensaver and the file's other settings are unchanged, and the file is left alone when there is a password. |
 | No udev, input devices or `uinput`, which a container doesn't get | Omarchy | gliff sends input through Wayland. |
 
 ## Run flags

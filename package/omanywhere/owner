@@ -21,20 +21,29 @@
 #
 #   OMANYWHERE_USER             login name (default omarchy)
 #   OMANYWHERE_UID              uid, and gid of the user's own group (default 1000)
-#   OMANYWHERE_AUTHORIZED_KEYS  ssh public keys, one per line (required)
+#   OMANYWHERE_AUTHORIZED_KEYS  ssh public keys, one per line (required, unless
+#                               there is a password: then ssh takes the
+#                               password, and only while there is no key)
 #   OMANYWHERE_PASSWORD         password for sudo and the lock screen, as a file
-#                               only (optional; without one the password is
-#                               locked)
+#                               only (optional). Without one the account stays
+#                               locked and the container has no password
+#                               anywhere: sudo and polkit ask for none, and
+#                               the idle lock is off (see "No password" below)
 #   TZ                          timezone, such as Europe/Paris (optional)
 #   OMANYWHERE_DRM_MASTER       allow: the desktop may take DRM master of a GPU
 #                               no display server holds, which turns off the
 #                               host's outputs; only for a host with no display
 #                               of its own (optional; without it the session
 #                               refuses such a GPU, see /usr/lib/omanywhere/session)
-#   OMANYWHERE_SUDO             nopasswd: sudo asks the owner for no password
-#                               (optional; without it sudo asks for the
-#                               password, as on an Omarchy install). The lock
-#                               screen still takes the password
+#
+# No password. Sudo and polkit would ask for a password that doesn't exist, a
+# dead end (Omarchy uses pkexec for DNS, locale and more), and Omarchy's idle
+# lock could never be unlocked. So each boot, with no password, writes a
+# sudoers rule and a polkit rule that ask the owner for none, and sets
+# idle.lock to 0 in the owner's shell.json. With a password the rules are
+# removed, and idle.lock goes back to Omarchy's default if this script was
+# what turned it off. With a password and no ssh key, ssh takes the password
+# (see /etc/ssh/sshd_config.d/10-omanywhere.conf).
 #
 # /etc comes from the image, so a new container has no account: it is made
 # again on every boot of a new container, with the same uid, over the home the
@@ -132,9 +141,8 @@ keys=$(input OMANYWHERE_AUTHORIZED_KEYS "" authorized_keys)
 password=$(input OMANYWHERE_PASSWORD "" password)
 tz=$(input TZ "")
 drm_master=$(input OMANYWHERE_DRM_MASTER "")
-sudo_mode=$(input OMANYWHERE_SUDO "")
 # Nothing this runs needs them in its environment, least of all the password.
-unset OMANYWHERE_USER OMANYWHERE_UID OMANYWHERE_AUTHORIZED_KEYS OMANYWHERE_PASSWORD TZ OMANYWHERE_DRM_MASTER OMANYWHERE_SUDO
+unset OMANYWHERE_USER OMANYWHERE_UID OMANYWHERE_AUTHORIZED_KEYS OMANYWHERE_PASSWORD TZ OMANYWHERE_DRM_MASTER
 
 # Check every input before changing anything.
 [[ $user =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || fail "OMANYWHERE_USER '$user' is not a valid login name"
@@ -151,11 +159,10 @@ while IFS= read -r line; do
     fail "OMANYWHERE_AUTHORIZED_KEYS line $number is not an ssh public key"
   valid_keys+=("$line")
 done <<<"$keys"
-((${#valid_keys[@]})) ||
-  fail "no authorized key: set OMANYWHERE_AUTHORIZED_KEYS or mount /run/secrets/authorized_keys; ssh is the only way in"
+((${#valid_keys[@]})) || [[ -n $password ]] ||
+  fail "no authorized key and no password: set OMANYWHERE_AUTHORIZED_KEYS or mount /run/secrets/authorized_keys, or give /run/secrets/password; ssh is the only way in"
 [[ $password != *$'\n'* ]] || fail "OMANYWHERE_PASSWORD has more than one line"
 [[ -z $drm_master || $drm_master == allow ]] || fail "OMANYWHERE_DRM_MASTER '$drm_master' is not allow (or unset)"
-[[ -z $sudo_mode || $sudo_mode == nopasswd ]] || fail "OMANYWHERE_SUDO '$sudo_mode' is not nopasswd (or unset)"
 if [[ -n $tz && ($tz == *..* || ! -f /usr/share/zoneinfo/$tz) ]]; then
   fail "TZ '$tz' is not a timezone in /usr/share/zoneinfo"
 fi
@@ -186,33 +193,42 @@ dri=$(dri_groups)
 usermod -aG "$owner_groups${dri:+,$dri}" "$user"
 echo "Owner $user (uid $uid) in groups $(id -nG "$user")"
 
+# The no-password rules (see the top) are this container's own. The sudoers
+# one is read after the wheel grant (00-omanywhere-wheel), so that it wins.
+# Omarchy's own passwordless rules (omarchy sudo passwordless) are its
+# 99-omarchy-* files, which it manages itself.
+nopasswd=/etc/sudoers.d/90-omanywhere-nopasswd
+polkit_rule=/etc/polkit-1/rules.d/49-omanywhere-nopasswd.rules
 if [[ -n $password ]]; then
   printf '%s:%s\n' "$user" "$password" | chpasswd
+  rm -f "$nopasswd" "$polkit_rule"
 else
   passwd -l "$user" >/dev/null
-  unusable='sudo and the lock screen'
-  [[ -z $sudo_mode ]] || unusable='the lock screen'
-  echo "No password in /run/secrets/password: $user's password is locked, so $unusable can't be used"
-fi
-
-# OMANYWHERE_SUDO=nopasswd: a rule of this container's own, read after the
-# wheel grant (00-omanywhere-wheel), so that it wins. Omarchy's own
-# passwordless rules (omarchy sudo passwordless) are its 99-omarchy-* files,
-# which it manages itself. Written each boot, or removed, from the input.
-nopasswd=/etc/sudoers.d/90-omanywhere-nopasswd
-if [[ -n $sudo_mode ]]; then
-  # $user is a checked login name, so the rule is always valid sudoers.
-  printf '# Written by /usr/lib/omanywhere/owner at boot: OMANYWHERE_SUDO=nopasswd.\n%s ALL=(ALL:ALL) NOPASSWD: ALL\n' "$user" |
+  # $user is a checked login name, so the rules are always valid.
+  printf '# Written by /usr/lib/omanywhere/owner at boot: no password.\n%s ALL=(ALL:ALL) NOPASSWD: ALL\n' "$user" |
     install -m 0440 /dev/stdin "$nopasswd"
-  echo "sudo asks $user for no password (OMANYWHERE_SUDO=nopasswd)"
-else
-  rm -f "$nopasswd"
+  printf '// Written by /usr/lib/omanywhere/owner at boot: no password.\npolkit.addRule(function (action, subject) {\n  if (subject.user == "%s") return polkit.Result.YES;\n});\n' "$user" |
+    install -D -m 0644 /dev/stdin "$polkit_rule"
+  echo "No password in /run/secrets/password: $user's password is locked, and sudo and polkit ask $user for none. The lock screen can't be unlocked, so the idle lock is turned off; a manual lock needs the session restarted"
 fi
 
 # Root's, in a root-owned directory: sshd's StrictModes accepts nothing else.
 install -d -m 0755 /run/omanywhere /run/omanywhere/authorized_keys
-printf '%s\n' "${valid_keys[@]}" | install -m 0644 /dev/stdin "/run/omanywhere/authorized_keys/$user"
-echo "Authorized ${#valid_keys[@]} key(s) for $user"
+# sshd takes keys only, unless there is a password and no key: then
+# password.conf, which 10-omanywhere.conf includes first, lets the owner (and
+# nobody else) log in with the password. Written or removed each boot, before
+# sshd starts. An empty keys file counts as no key.
+install -d -m 0755 /run/omanywhere/sshd
+if ((${#valid_keys[@]})); then
+  printf '%s\n' "${valid_keys[@]}" | install -m 0644 /dev/stdin "/run/omanywhere/authorized_keys/$user"
+  rm -f /run/omanywhere/sshd/password.conf
+  echo "Authorized ${#valid_keys[@]} key(s) for $user"
+else
+  rm -f "/run/omanywhere/authorized_keys/$user"
+  printf '# Written by /usr/lib/omanywhere/owner at boot: a password and no ssh key.\nAllowUsers %s\nPasswordAuthentication yes\nKbdInteractiveAuthentication no\nAuthenticationMethods password\n' "$user" |
+    install -m 0644 /dev/stdin /run/omanywhere/sshd/password.conf
+  echo "No ssh key, so ssh takes $user's password (and no key)"
+fi
 
 if [[ -n $tz ]]; then
   systemd-firstboot --force --timezone="$tz"
@@ -235,6 +251,41 @@ else
   echo "Running Omarchy's first-install user setup for $user"
   as_owner omarchy-provision-user --first-install
 fi
+
+# Omarchy's shell locks the screen after idle.lock seconds (0 turns it off;
+# /usr/share/omarchy/shell/plugins/services/idle/Service.qml). shell.json is
+# the owner's, so it is edited as the owner, in place (which keeps its mode
+# and any symlink), and only when it exists: the shell may take a user file
+# instead of the package default, so a new partial one would drop the bar.
+# The marker records that this script turned the lock off, so that a later
+# boot with a password, over the same home, can undo exactly that.
+# shellcheck disable=SC2016 # the owner's sh expands its own variables
+idle=$(as_owner sh -c '
+  file=$1 marker=$HOME/.local/state/omanywhere/idle-lock-off
+  [ -z "$2" ] || [ -e "$marker" ] || exit 0
+  [ -f "$file" ] || { echo missing; exit 0; }
+  lock=$(jq -r ".idle.lock // empty" "$file" 2>/dev/null) || { echo unreadable; exit 0; }
+  edit() { jq "$1" "$file" >"$file.new" && cat "$file.new" >"$file"; status=$?; rm -f "$file.new"; return $status; }
+  # The marker is made before the edit and removed only once nothing is left
+  # to undo, so a failure on either side is retried at the next boot.
+  if [ -z "$2" ]; then
+    [ "$lock" = 0 ] && exit 0
+    { mkdir -p "${marker%/*}" && : >"$marker"; } || { echo failed; exit 0; }
+    if edit ".idle.lock = 0"; then echo off; else rm -f "$marker"; echo failed; fi
+  elif [ "$lock" != 0 ]; then
+    rm -f "$marker"; echo kept
+  elif edit "del(.idle.lock)"; then
+    rm -f "$marker"; echo restored
+  else
+    echo failed
+  fi' sh "$home/.config/omarchy/shell.json" "${password:+yes}") || idle=failed
+case $idle in
+  off) echo "Set idle.lock to 0 in ~/.config/omarchy/shell.json: with no password the lock screen can't be unlocked" ;;
+  restored) echo "Removed idle.lock from ~/.config/omarchy/shell.json, which this script set to 0 without a password: Omarchy's default applies again" ;;
+  kept) echo "Left idle.lock in ~/.config/omarchy/shell.json as the owner set it" ;;
+  missing) echo "Warning: ~/.config/omarchy/shell.json does not exist, so idle.lock stays as Omarchy has it" >&2 ;;
+  unreadable | failed) echo "Warning: ~/.config/omarchy/shell.json can't be read or changed, so idle.lock stays as it is" >&2 ;;
+esac
 
 # omarchy-refresh-pacman (behind omarchy-channel-set too) puts Omarchy's
 # pacman.conf back, without the line this container needs (image/Containerfile

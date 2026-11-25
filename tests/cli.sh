@@ -9,14 +9,18 @@
 #   - a key the container rejects fails the owner unit: up fails loudly with
 #     the unit's journal and leaves the container stopped, and up --key with a
 #     good key starts it again;
+#   - up --password with no key makes a password-only desktop, and a key added
+#     later replaces the password for ssh; with neither a key nor a password,
+#     up refuses and names both ways in; --no-password deletes the password;
 #   - up runs the container with the run flags and nothing more, ssh on
-#     127.0.0.1 only, the password as a read-only secret file it made (never
-#     in argv or the environment, and only root can read it), and is
-#     idempotent;
+#     127.0.0.1 only, no password (sudo asks for none), and is idempotent;
+#     up --password makes the container with a password as a read-only secret
+#     file it made (never in argv or the environment, and only root can read
+#     it);
 #   - status and ssh-config describe it, and the owner gets in with ssh through
 #     the printed Host block;
 #   - down keeps the volumes and the config, so a new up keeps the port, the
-#     password and the host key;
+#     password (when it has one) and the host key;
 #   - up fails, and stops the container, when sshd isn't running after boot;
 #   - down --purge asks first, and --yes removes everything; a volume it
 #     can't remove is named, and the config is kept.
@@ -40,7 +44,8 @@ config=$OMANYWHERE_CONFIG_DIR/$name
 # down --purge --yes is the cleanup; the helpers after it catch whatever it
 # leaves if the CLI itself is broken.
 trap '"$cli" down "$name" --purge --yes >/dev/null 2>&1 || true
-  cleanup "$container" "$container-holder" "$container-blocker" "$container-port"; remove_volumes "$home_volume" "$state_volume"; rm -rf "$tmp"' EXIT
+  "$cli" down "$name-pw" --purge --yes >/dev/null 2>&1 || true
+  cleanup "$container" "$container-pw" "$container-holder" "$container-blocker" "$container-port"; remove_volumes "$home_volume" "$state_volume"; rm -rf "$tmp"' EXIT
 
 docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "image $IMAGE not found (run make image)"
 [[ -x $cli ]] || fail "$cli is missing or not executable"
@@ -70,7 +75,7 @@ for bad in dri: dri:card1 dri:/dev/dri/card dri:/dev/dri/renderD128 dri:/dev/dri
   fails "--gpu" up "$name" --gpu "$bad" --key "$tmp/id_ed25519.pub"
 done
 fails "--drm-master" up "$name" --drm-master yes --key "$tmp/id_ed25519.pub"
-fails "--sudo" up "$name" --sudo yes --key "$tmp/id_ed25519.pub"
+fails "usage" up "$name" --sudo nopasswd --key "$tmp/id_ed25519.pub"
 fails "--listen" up "$name" --listen 'not an address' --key "$tmp/id_ed25519.pub"
 fails "usage" frobnicate "$name"
 fails "usage" ssh_config "$name"
@@ -78,6 +83,9 @@ fails "usage" ssh_config "$name"
 (umask 077 && mkdir -p "$OMANYWHERE_CONFIG_DIR/$name-x")
 printf 'listen=127.0.0.1\nport=2222\ngpu=sometimes\n' >"$OMANYWHERE_CONFIG_DIR/$name-x/settings"
 fails "gpu" ssh-config "$name-x"
+# An older settings file's sudo= line still loads, and is ignored.
+printf 'listen=127.0.0.1\nport=2222\ngpu=none\ndrm_master=\nsudo=nopasswd\n' >"$OMANYWHERE_CONFIG_DIR/$name-x/settings"
+"$cli" ssh-config "$name-x" >/dev/null || fail "ssh-config refused a settings file with an old sudo=nopasswd line"
 printf 'listen=127.0.0.1\nport=99999\n' >"$OMANYWHERE_CONFIG_DIR/$name-x/settings"
 fails "port" ssh-config "$name-x"
 printf 'listen=127.0.0.1\nport=2222\ngpu=dri:/tmp/card1\n' >"$OMANYWHERE_CONFIG_DIR/$name-x/settings"
@@ -90,6 +98,8 @@ rm -rf "${OMANYWHERE_CONFIG_DIR:?}/$name-x"
 # No key: no --key, and no agent to ask.
 out=$(SSH_AUTH_SOCK=$tmp/no-agent "$cli" up "$name" --gpu none 2>&1) && fail "up without a key succeeded: $out"
 [[ $out == *"no ssh key"* ]] || fail "up without a key did not say 'no ssh key': $out"
+[[ $out == *"--password"* && $out == *"--key"* && $out == *"--github"* ]] ||
+  fail "up without a key or a password did not name the ways in: $out"
 printf '# only a comment\n\n' >"$tmp/empty.pub"
 fails "no ssh key" up "$name" --gpu none --key "$tmp/empty.pub"
 # --github: a user name GitHub allows, one of --key and --github, and a
@@ -174,13 +184,13 @@ pass "--gpu: dri:/dev/dri/cardN passes that card and its own render node; NVIDIA
 # shellcheck disable=SC2016 # the script expands its own variables
 out=$(bash -c '
   source "$1"
-  settings=$2 listen=127.0.0.1 port=2222 gpu=dri:/dev/dri/card1 drm_master= sudo=nopasswd
+  settings=$2 listen=127.0.0.1 port=2222 gpu=dri:/dev/dri/card1 drm_master=
   save_settings
-  gpu='' sudo=''
+  gpu=''
   load_settings
-  echo "$gpu $sudo"' bash "$cli" "$tmp/settings") || fail "could not save and load the settings"
-[[ $out == "dri:/dev/dri/card1 nopasswd" ]] || fail "gpu=dri:/dev/dri/card1 and sudo=nopasswd came back from the settings as '$out'"
-pass "gpu=dri:/dev/dri/card1 and sudo=nopasswd are saved in the settings and read back"
+  echo "$gpu"' bash "$cli" "$tmp/settings") || fail "could not save and load the settings"
+[[ $out == "dri:/dev/dri/card1" ]] || fail "gpu=dri:/dev/dri/card1 came back from the settings as '$out'"
+pass "gpu=dri:/dev/dri/card1 is saved in the settings and read back"
 
 # --- A key line the owner unit rejects: up fails loudly, with the unit's own
 # words, and the container is left stopped, not running without a way in.
@@ -230,28 +240,22 @@ pass "run flags: unprivileged, no capabilities added, lib/seccomp.json, private 
 mounts=$(inspect '{{range .Mounts}}{{.Type}} {{.Name}} {{.Destination}} {{.RW}}{{"\n"}}{{end}}' | sort)
 grep -qx "volume $home_volume /home true" <<<"$mounts" || fail "no $home_volume on /home: $mounts"
 grep -qx "volume $state_volume /var/lib/omanywhere true" <<<"$mounts" || fail "no $state_volume on /var/lib/omanywhere: $mounts"
-grep -qx "bind  /run/secrets/password false" <<<"$mounts" || fail "the password is not a read-only secret file: $mounts"
+grep -q " /run/secrets/password " <<<"$mounts" && fail "the default up mounted a password: $mounts"
 grep -qx "bind  /run/secrets/authorized_keys false" <<<"$mounts" || fail "the keys are not a read-only secret file: $mounts"
-pass "named volumes on /home and /var/lib/omanywhere; password and keys as read-only files"
+pass "named volumes on /home and /var/lib/omanywhere; the keys as a read-only file, and no password"
 
 [[ $(stat -c %a "$OMANYWHERE_CONFIG_DIR") == 700 && $(stat -c %a "$config") == 700 ]] || fail "the config directories are not 0700"
-[[ $(stat -c %a "$config/password") == 600 ]] || fail "the password file is not 0600"
-password=$(<"$config/password")
-((${#password} >= 20)) || fail "the password is short: ${#password} characters"
+[[ ! -e $config/password ]] || fail "the default up made a password"
 [[ $(<"$config/authorized_keys") == "$(<"$tmp/id_ed25519.pub")" ]] || fail "authorized_keys is not the --key file"
-inspect '{{json .Config.Env}} {{json .Args}} {{json .Config.Cmd}} {{json .Path}}' | grep -F "$password" >/dev/null &&
-  fail "the password is in the container's environment or arguments"
-cexec "$container" journalctl -b --no-pager | grep -F "$password" >/dev/null && fail "the password is in the journal"
-out=$(docker exec -i "$container" runuser -u "$user" -- sudo -S -p '' true 2>&1 <"$config/password") ||
-  fail "sudo with the generated password failed: $out"
-pass "config 0700, password 0600 (${#password} characters), not in argv, env or journal; sudo takes it"
+cexec "$container" test ! -e /run/secrets/password || fail "the container has /run/secrets/password"
+out=$(cexec "$container" runuser -u "$user" -- sudo -n true 2>&1) || fail "sudo asks for a password, though the default up has none: $out"
+cexec "$container" test -f /etc/polkit-1/rules.d/49-omanywhere-nopasswd.rules || fail "no polkit rule in the default up's container"
+pass "config 0700, no password made or mounted by default; sudo asks for none"
 # The bind-mounted files are the host user's (uid 1000, the owner's uid too),
 # so only the root-only directory they sit in keeps the owner's programs out.
 [[ $(cexec "$container" stat -c '%a %U' /run/secrets) == "700 root" ]] || fail "/run/secrets is not root's, mode 0700"
-out=$(cexec "$container" runuser -u "$user" -- cat /run/secrets/password 2>&1) && fail "the owner can read the password: $out"
 out=$(cexec "$container" runuser -u "$user" -- ls /run/secrets 2>&1) && fail "the owner can list /run/secrets: $out"
-pass "/run/secrets is root's (0700): the owner can neither read the password nor list the secrets"
-out=$(cexec "$container" runuser -u "$user" -- sudo -n true 2>&1) && fail "sudo ran without a password, with no --sudo"
+pass "/run/secrets is root's (0700): the owner can't list the secrets"
 
 # ssh is published on loopback only, on the port the config keeps.
 port=$(sed -n 's/^port=//p' "$config/settings")
@@ -319,7 +323,6 @@ EOF
 out=$(ssh -F "$tmp/ssh_config" "$container" id -un) || fail "ssh through the ssh-config block failed"
 [[ $out == "$user" ]] || fail "ssh ran as '$out', not $user"
 ssh-keygen -F "$container" -f "$tmp/known_hosts" >/dev/null || fail "known_hosts has no entry under the alias $container"
-out=$(ssh -F "$tmp/ssh_config" "$container" cat /run/secrets/password 2>&1) && fail "the owner reads the password over ssh: $out"
 out=$(ssh -F "$tmp/ssh_config" "$container" ls /run/secrets 2>&1) && fail "the owner lists /run/secrets over ssh: $out"
 pass "ssh -F <ssh-config> $container logs in as $user, who can't read /run/secrets; known_hosts keeps the key under $container"
 
@@ -327,7 +330,7 @@ pass "ssh -F <ssh-config> $container logs in as $user, who can't read /run/secre
 "$cli" down "$name" >/dev/null || fail "down failed"
 exists container "$container" && fail "down left the container"
 if ! exists volume "$home_volume" || ! exists volume "$state_volume"; then fail "down removed the volumes"; fi
-[[ -f $config/password && -f $config/settings ]] || fail "down removed the config"
+[[ -f $config/authorized_keys && -f $config/settings ]] || fail "down removed the config"
 out=$("$cli" status "$name" 2>&1) && fail "status of a removed container succeeded: $out"
 grep -Eq '^container +absent' <<<"$out" || fail "status does not say the container is absent: $out"
 pass "down removed the container and kept the volumes and config; status says absent"
@@ -342,13 +345,26 @@ exists container "$container" && fail "a failed up left a container"
 cleanup "$blocker"
 pass "up after down with port $port taken: failed, naming the port"
 
-# --- up again: a new container with the same port, password and host key.
-"$cli" up "$name" --sudo nopasswd >/dev/null 2>&1 || fail "up --sudo nopasswd after down failed"
-grep -qx 'sudo=nopasswd' "$config/settings" || fail "--sudo nopasswd is not in $config/settings"
-inspect '{{json .Config.Env}}' | grep -F '"OMANYWHERE_SUDO=nopasswd"' >/dev/null ||
-  fail "up --sudo nopasswd did not give the container OMANYWHERE_SUDO=nopasswd"
-out=$(cexec "$container" runuser -u "$user" -- sudo -n true 2>&1) || fail "up --sudo nopasswd: sudo still asks for a password: $out"
-pass "up --sudo nopasswd on the new container: kept in the settings, passed as OMANYWHERE_SUDO=nopasswd; sudo asks for no password"
+# --- up --password: a new container with the same port and host key, and a
+# password for sudo.
+"$cli" up "$name" --password >/dev/null 2>&1 || fail "up --password after down failed"
+mounts=$(inspect '{{range .Mounts}}{{.Type}} {{.Name}} {{.Destination}} {{.RW}}{{"\n"}}{{end}}' | sort)
+grep -qx "bind  /run/secrets/password false" <<<"$mounts" || fail "the password is not a read-only secret file: $mounts"
+[[ $(stat -c %a "$config/password") == 600 ]] || fail "the password file is not 0600"
+password=$(<"$config/password")
+((${#password} >= 20)) || fail "the password is short: ${#password} characters"
+inspect '{{json .Config.Env}} {{json .Args}} {{json .Config.Cmd}} {{json .Path}}' | grep -F "$password" >/dev/null &&
+  fail "the password is in the container's environment or arguments"
+cexec "$container" journalctl -b --no-pager | grep -F "$password" >/dev/null && fail "the password is in the journal"
+out=$(docker exec -i "$container" runuser -u "$user" -- sudo -S -p '' true 2>&1 <"$config/password") ||
+  fail "sudo with the generated password failed: $out"
+out=$(cexec "$container" runuser -u "$user" -- sudo -n true 2>&1) && fail "sudo ran without a password, with --password"
+cexec "$container" test ! -e /etc/polkit-1/rules.d/49-omanywhere-nopasswd.rules || fail "the polkit rule exists with a password"
+pass "up --password: password 0600 (${#password} characters), not in argv, env or journal; sudo takes it and asks for it"
+[[ $(cexec "$container" stat -c '%a %U' /run/secrets) == "700 root" ]] || fail "/run/secrets is not root's, mode 0700"
+out=$(cexec "$container" runuser -u "$user" -- cat /run/secrets/password 2>&1) && fail "the owner can read the password: $out"
+out=$(cexec "$container" runuser -u "$user" -- ls /run/secrets 2>&1) && fail "the owner can list /run/secrets: $out"
+pass "/run/secrets is root's (0700): the owner can neither read the password nor list the secrets"
 [[ $(docker port "$container" 22/tcp) == "127.0.0.1:$port" ]] || fail "the new container is not on port $port"
 [[ $(<"$config/password") == "$password" ]] || fail "the password changed"
 out=$(ssh -F "$tmp/ssh_config" -o StrictHostKeyChecking=yes "$container" id -un) ||
@@ -358,7 +374,8 @@ sed "s|IdentityFile $tmp/id_ed25519\$|IdentityFile $tmp/second/id_ed25519|" "$tm
 grep -q "IdentityFile $tmp/second/id_ed25519" "$tmp/ssh_config.second" || fail "could not make an ssh config for the second key"
 out=$(ssh -F "$tmp/ssh_config.second" -o StrictHostKeyChecking=yes "$container" id -un) ||
   fail "the key added with up --key does not log in after the container was made again"
-pass "up after down: port $port, password and host key kept; the key added with up --key logs in"
+out=$(ssh -F "$tmp/ssh_config" "$container" cat /run/secrets/password 2>&1) && fail "the owner reads the password over ssh: $out"
+pass "up after down: port $port, password and host key kept; the key added with up --key logs in; the owner can't read the password over ssh"
 
 # --- No sshd after boot (masked here, which survives a restart): up fails
 # as for the owner, with sshd's journal, and stops the container.
@@ -368,6 +385,73 @@ out=$("$cli" up "$name" 2>&1) && fail "up with sshd masked succeeded: $out"
 [[ $out == *"sshd.service"* ]] || fail "up did not say sshd failed: $out"
 [[ $(docker inspect -f '{{.State.Running}}' "$container") == false ]] || fail "the container still runs without sshd"
 pass "no sshd after boot: up failed, named sshd.service, and stopped the container"
+
+# --- A password-only desktop: up --password with no key. The agent's keys are
+# not taken for it, and ssh takes the password (tests/owner.sh checks the
+# sshd settings; this is a real login). Then the key and password paths:
+# a key added to the existing container, an old settings file with a
+# password file beside it, and --no-password.
+pwname=$name-pw
+pwcontainer=omanywhere-$pwname
+check_name "$pwcontainer"
+pwconfig=$OMANYWHERE_CONFIG_DIR/$pwname
+(umask 077 && mkdir -p "$pwconfig" && printf '  \n' >"$pwconfig/password")
+out=$(SSH_AUTH_SOCK=$tmp/no-agent "$cli" up "$pwname" --gpu none --password 2>&1) && fail "up with a blank password file succeeded: $out"
+[[ $out == *"$pwconfig/password is blank"* ]] || fail "up did not name the blank password file: $out"
+exists container "$pwcontainer" && fail "a refused up made a container"
+(umask 077 && printf '\nsecret\n' >"$pwconfig/password")
+out=$(SSH_AUTH_SOCK=$tmp/no-agent "$cli" up "$pwname" --gpu none --password 2>&1) && fail "up with a two-line password file succeeded: $out"
+[[ $out == *"more than one line"* ]] || fail "up did not refuse a two-line password file: $out"
+(umask 077 && printf 'my-own-password-%s\n' "$$" >"$pwconfig/password")
+out=$(SSH_AUTH_SOCK=$tmp/no-agent "$cli" up "$pwname" --gpu none --password 2>&1) || fail "up --password with no key failed: $out"
+[[ -f $pwconfig/authorized_keys && ! -s $pwconfig/authorized_keys ]] || fail "the keys file is not empty with no key"
+[[ $(<"$pwconfig/password") == "my-own-password-$$" ]] || fail "up --password replaced the password the user wrote"
+cexec "$pwcontainer" test ! -s /run/secrets/authorized_keys || fail "the password-only container has a key"
+pwport=$(sed -n 's/^port=//p' "$pwconfig/settings")
+pw_login() {
+  password_ssh "$pwconfig/password" -p "$pwport" -l "$1" 127.0.0.1 id -un
+}
+out=$(pw_login "$user") || fail "ssh with the password failed: $out"
+[[ $out == "$user" ]] || fail "ssh with the password ran as '$out', not $user"
+out=$(pw_login root) && fail "root logged in with the password: $out"
+printf 'not-the-password\n' >"$tmp/wrong"
+out=$(password_ssh "$tmp/wrong" -p "$pwport" -l "$user" 127.0.0.1 true 2>&1) && fail "a wrong password logged in"
+pass "up --password with no key: an empty keys file, the user's own password kept, ssh takes the password for $user only (not a wrong one, not root)"
+# A key added to the existing container applies at its next start, and then
+# the password no longer logs in.
+out=$("$cli" up "$pwname" --key "$tmp/id_ed25519.pub" 2>&1) || fail "up --key on the password-only container failed: $out"
+docker stop -t 30 "$pwcontainer" >/dev/null
+"$cli" up "$pwname" >/dev/null 2>&1 || fail "up after stop failed"
+out=$(ssh -F /dev/null -o IdentitiesOnly=yes -o IdentityAgent=none -o StrictHostKeyChecking=no \
+  -o UserKnownHostsFile=/dev/null -o BatchMode=yes -o LogLevel=ERROR -o ConnectTimeout=10 -i "$tmp/id_ed25519" -p "$pwport" "$user@127.0.0.1" 'id -un') ||
+  fail "the added key does not log in after a restart: $out"
+out=$(pw_login "$user" 2>&1) && fail "the password still logs in beside a key: $out"
+pass "up --key on a password-only container: after a restart the key logs in and the password no longer does"
+# An old settings file with a sudo= line, beside a password file: the
+# container made again keeps the password.
+"$cli" down "$pwname" >/dev/null || fail "down failed"
+printf 'sudo=nopasswd\n' >>"$pwconfig/settings"
+out=$("$cli" up "$pwname" 2>&1) || fail "up with an old settings file failed: $out"
+[[ $out == *"sudo=nopasswd from an older omanywhere"* ]] || fail "up did not say the old sudo=nopasswd no longer applies: $out"
+cexec "$pwcontainer" test -f /run/secrets/password || fail "the password was not mounted with an old sudo= line and a password file"
+out=$(cexec "$pwcontainer" runuser -u "$user" -- sudo -n true 2>&1) && fail "sudo ran without a password, with a password file"
+pass "an old settings file (sudo=nopasswd) with a password file: up keeps the password"
+# A container made with a password doesn't start once the file is gone, and
+# up says why.
+docker stop -t 30 "$pwcontainer" >/dev/null
+mv "$pwconfig/password" "$tmp/kept-password"
+out=$("$cli" up "$pwname" 2>&1) && fail "up started a container made with a password whose file is gone: $out"
+[[ $out == *"was made with a password"* ]] || fail "up did not say the password file is gone: $out"
+mv "$tmp/kept-password" "$pwconfig/password"
+pass "a container made with a password whose file is gone: up refuses and says why"
+# --no-password deletes the file, and the next container has none.
+"$cli" down "$pwname" >/dev/null || fail "down failed"
+out=$("$cli" up "$pwname" --no-password 2>&1) || fail "up --no-password failed: $out"
+[[ $out == *"deleted $pwconfig/password"* && ! -e $pwconfig/password ]] || fail "up --no-password did not delete the password file: $out"
+cexec "$pwcontainer" test ! -e /run/secrets/password || fail "the container has a password after --no-password"
+cexec "$pwcontainer" runuser -u "$user" -- sudo -n true || fail "sudo asks for a password after --no-password"
+pass "up --no-password: the password file is deleted, and the new container has none"
+"$cli" down "$pwname" --purge --yes >/dev/null || fail "down --purge of the second container failed"
 
 # --- down --purge: asks, and with no terminal refuses without --yes.
 out=$("$cli" down "$name" --purge </dev/null 2>&1) && fail "down --purge without --yes or a terminal succeeded: $out"

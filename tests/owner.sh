@@ -33,6 +33,9 @@ mkdir "$tmp/own"
 test_key "$tmp/own" # a key the owner adds to ~/.ssh/authorized_keys themselves
 password=$(head -c 18 /dev/urandom | base64)
 nopasswd=/etc/sudoers.d/90-omanywhere-nopasswd
+polkit_rule=/etc/polkit-1/rules.d/49-omanywhere-nopasswd.rules
+shell_json=/home/$user/.config/omarchy/shell.json
+idle_marker=/home/$user/.local/state/omanywhere/idle-lock-off
 printf '%s\n' "$password" >"$tmp/password"
 volumes=(-v "$home_volume:/home" -v "$state_volume:/var/lib/omanywhere")
 marker=/home/$user/.local/state/omarchy/done/finalize-user
@@ -50,6 +53,20 @@ boot() {
     cexec "$1" journalctl -b -u omanywhere-owner.service --no-pager >&2 || true
     fail "$1: omanywhere-owner.service is not active"
   fi
+}
+
+# polkit_asks NAME: pkcheck as the owner on its own process, with no agent to
+# ask: the status and output of polkit's answer for an action that needs
+# authorization (polkit.exec, as pkexec asks).
+polkit_asks() {
+  cexec "$1" runuser -u "$user" -- timeout 30 sh -c \
+    'pkcheck --action-id org.freedesktop.policykit.exec --process $$ --allow-user-interaction' 2>&1
+}
+
+# set_idle_lock NAME VALUE: the owner sets idle.lock in their shell.json.
+set_idle_lock() {
+  cexec "$1" runuser -u "$user" -- sh -c "jq '.idle.lock = $2' '$shell_json' >'$shell_json.new' && cat '$shell_json.new' >'$shell_json' && rm '$shell_json.new'" ||
+    fail "can't set idle.lock to $2"
 }
 
 # sorted_groups NAME: the owner's groups in NAME, sorted, on one line.
@@ -107,9 +124,15 @@ log=$(cexec "$first" journalctl -b --no-pager)
 [[ $log != *"$password"* ]] || fail "the password is in the journal"
 out=$(docker exec -i "$first" runuser -u "$user" -- sudo -S -p '' true 2>&1 <<<"$password") ||
   fail "sudo with the owner's password failed: $out"
-out=$(cexec "$first" runuser -u "$user" -- sudo -n true 2>&1) && fail "sudo ran without a password, with no OMANYWHERE_SUDO"
-cexec "$first" test ! -e "$nopasswd" || fail "$nopasswd exists, with no OMANYWHERE_SUDO"
-pass "sudo works with the password from /run/secrets/password, which the journal doesn't contain, and asks for it"
+out=$(cexec "$first" runuser -u "$user" -- sudo -n true 2>&1) && fail "sudo ran without a password, though there is one"
+[[ $(cexec "$first" sh -c "test ! -e $nopasswd && test ! -e $polkit_rule && jq .idle.lock $shell_json") == 300 ]] ||
+  fail "with a password, a passwordless rule exists or idle.lock is not Omarchy's 300"
+# The check that must say yes below: with a password, polkit answers that the
+# owner must authenticate, and there is no agent to ask (polkit's own words,
+# so a dead polkitd can't pass).
+out=$(polkit_asks "$first") && fail "polkit answered yes for $user, though there is a password: $out"
+[[ $out == *"requires authentication but no agent is available"* ]] || fail "polkit did not ask for authentication: $out"
+pass "sudo works with the password from /run/secrets/password, which the journal doesn't contain, and asks for it; polkit refuses; no passwordless rule, idle.lock untouched"
 
 # lib/seccomp.json allows the namespaces Chromium's sandbox makes; with
 # Docker's default profile it crashes at start.
@@ -160,7 +183,12 @@ host_key=$(check_ssh "$first")
 cexec "$first" grep -qF "$host_key" /var/lib/omanywhere/ssh/ssh_host_ed25519_key.pub ||
   fail "sshd's host key is not the one in /var/lib/omanywhere"
 [[ -z $(cexec "$first" find /etc/ssh -maxdepth 1 -name 'ssh_host_*') ]] || fail "host keys were made in /etc/ssh as well"
-pass "ssh: key login works, publickey is the only method, no root; host key in the state volume"
+# With keys, a password doesn't open ssh: the first container has both.
+out=$(cexec "$first" sshd -T -C "user=$user,host=localhost,addr=127.0.0.1")
+grep -qix 'passwordauthentication no' <<<"$out" || fail "$first: with keys and a password, sshd allows the password"
+grep -qix 'authenticationmethods publickey' <<<"$out" || fail "$first: with keys and a password, sshd takes more than keys"
+cexec "$first" test ! -e /run/omanywhere/sshd/password.conf || fail "$first: password.conf exists though there are keys"
+pass "ssh: key login works, publickey is the only method, no root; host key in the state volume; keys and a password: still keys only"
 
 machine_id=$(cexec "$first" cat /etc/machine-id)
 [[ $machine_id =~ ^[0-9a-f]{32}$ ]] || fail "no machine-id: '$machine_id'"
@@ -169,12 +197,13 @@ machine_id=$(cexec "$first" cat /etc/machine-id)
 pass "machine-id $machine_id, kept in the state volume"
 
 # --- Recreate over the same volumes. This time the key comes as a secret
-# file, there is no password, and Omarchy has (as far as this container knows)
+# file, there is no password (so sudo, polkit and the idle lock ask for none),
+# and Omarchy has (as far as this container knows)
 # recorded groups, mounted in to exercise that path.
 cleanup "$first"
 printf '%s\n' video docker no-such-group >"$tmp/groups"
 start_container "$second" "${volumes[@]}" \
-  -e OMANYWHERE_USER="$user" -e OMANYWHERE_UID="$uid" -e OMANYWHERE_SUDO=nopasswd \
+  -e OMANYWHERE_USER="$user" -e OMANYWHERE_UID="$uid" \
   -v "$tmp/id_ed25519.pub:/run/secrets/authorized_keys:ro" \
   -v "$tmp/groups:/var/lib/omarchy/provisioning/groups:ro"
 boot "$second"
@@ -197,16 +226,22 @@ cexec "$second" grep -qx '# changed by the owner' "$hook" || fail "the owner's c
 pass "the owner's pre-refresh-pacman hook kept as they left it"
 
 cexec "$second" bash -c "getent shadow $user | cut -d: -f2 | grep -q '^!'" || fail "$user's password is not locked"
-grep -qF "password is locked, so the lock screen can't be used" <<<"$log" ||
-  fail "the journal does not say that the lock screen needs a password"
+grep -qF "password is locked, and sudo and polkit ask $user for none" <<<"$log" ||
+  fail "the journal does not say that sudo and polkit ask for no password"
 pass "no password given: the password is locked, and the journal says so"
 
-# OMANYWHERE_SUDO=nopasswd: sudo asks for no password, though there is none.
-# Without it, on the next run, the rule is gone.
-grep -qF "sudo asks $user for no password" <<<"$log" || fail "the journal does not say that sudo asks for no password"
-[[ $(cexec "$second" stat -c '%a %U' "$nopasswd") == "440 root" ]] || fail "$nopasswd is not root's, mode 0440"
-out=$(cexec "$second" runuser -u "$user" -- sudo -n true 2>&1) || fail "sudo asked for a password with OMANYWHERE_SUDO=nopasswd: $out"
-pass "OMANYWHERE_SUDO=nopasswd: sudo asks for no password ($nopasswd, root's, 0440)"
+# With no password, sudo and polkit ask for none; with one on the next run,
+# the rules are gone (below).
+[[ $(cexec "$second" stat -c '%a %U' "$nopasswd" "$polkit_rule") == $'440 root\n644 root' ]] ||
+  fail "$nopasswd is not root's 0440, or $polkit_rule is not root's 0644"
+out=$(cexec "$second" runuser -u "$user" -- sudo -n true 2>&1) || fail "sudo asked for a password with none set: $out"
+out=$(polkit_asks "$second") || fail "polkit did not answer yes for $user: $out"
+pass "no password: sudo and polkit ask $user for none ($nopasswd root's 0440, $polkit_rule root's 0644)"
+
+[[ $(cexec "$second" runuser -u "$user" -- sh -c "jq -r '[.idle.lock, .idle.screensaver] | @tsv' '$shell_json' && test -e '$idle_marker' && echo marker") == $'0\t150\nmarker' ]] ||
+  fail "no password: idle.lock is not 0, idle.screensaver is not 150, or the marker is missing"
+grep -qF "Set idle.lock to 0" <<<"$log" || fail "the journal does not say idle.lock was set to 0"
+pass "no password: idle.lock is 0 in the owner's shell.json (screensaver as it was), with a marker"
 
 second_key=$(check_ssh "$second")
 [[ $second_key == "$host_key" ]] || fail "the ssh host key changed on recreate"
@@ -216,19 +251,56 @@ out=$(ssh "${ssh_opts[@]}" -i "$tmp/own/id_ed25519" "$user@$(container_ip "$seco
   fail "the key the owner added to ~/.ssh/authorized_keys no longer logs in"
 pass "the owner's own key in ~/.ssh/authorized_keys still logs in"
 
-# Run again without OMANYWHERE_SUDO, last, as a boot of this container would:
-# the rule is removed.
-out=$(docker exec -e OMANYWHERE_SUDO= "$second" /usr/lib/omanywhere/owner 2>&1) || fail "the owner script failed with OMANYWHERE_SUDO unset: $out"
-cexec "$second" test ! -e "$nopasswd" || fail "$nopasswd is still there with OMANYWHERE_SUDO unset"
-out=$(cexec "$second" runuser -u "$user" -- sudo -n true 2>&1) && fail "sudo still ran without a password, with OMANYWHERE_SUDO unset"
-pass "OMANYWHERE_SUDO unset: the rule is removed, and sudo asks for the password again"
+# idle.lock back to 300 (the owner changed it, say): the next boot's run
+# sets it to 0 again, in the file's own mode, and logs only when it changes.
+mode=$(cexec "$second" stat -c %a "$shell_json")
+set_idle_lock "$second" 300
+out=$(cexec "$second" /usr/lib/omanywhere/owner 2>&1) || fail "the owner script failed on a second run: $out"
+[[ $(cexec "$second" sh -c "stat -c '%a %U' $shell_json; jq .idle.lock $shell_json; ls $shell_json.new 2>&1 | grep -c 'No such'") == "$mode $user"$'\n0\n1' ]] ||
+  fail "$shell_json is not $user's with mode $mode and idle.lock 0 after the owner script, or a temporary file is left"
+out=$(cexec "$second" /usr/lib/omanywhere/owner 2>&1) || fail "the owner script failed on a third run: $out"
+[[ $out != *"Set idle.lock"* ]] || fail "the owner script set idle.lock again when it was 0"
+pass "idle.lock set back to 300: the owner script makes it 0 again, in $user's file and mode, and leaves 0 alone"
+
+# A password on the next run, as a boot of this container would have it: the
+# rules are removed, and the idle lock this script turned off is Omarchy's
+# default again (the key deleted, the marker gone).
+printf '%s\n' "$password" | docker exec -i "$second" sh -c 'cat >/run/secrets/password'
+out=$(cexec "$second" /usr/lib/omanywhere/owner 2>&1) || fail "the owner script failed with a password: $out"
+[[ $(cexec "$second" sh -c "test ! -e $nopasswd && test ! -e $polkit_rule && test ! -e $idle_marker && jq -r '.idle.lock // \"default\"' $shell_json") == default ]] ||
+  fail "with a password, a rule or the marker is still there, or idle.lock is not Omarchy's default"
+[[ $out == *"Omarchy's default applies again"* ]] || fail "the owner script did not say idle.lock was restored: $out"
+out=$(cexec "$second" runuser -u "$user" -- sudo -n true 2>&1) && fail "sudo still ran without a password, with one set"
+pass "a password on the next run: both rules removed, sudo asks for the password, idle.lock back to Omarchy's default"
+# If the owner changed idle.lock meanwhile, a password leaves their value.
+cexec "$second" rm /run/secrets/password
+out=$(cexec "$second" /usr/lib/omanywhere/owner 2>&1) || fail "the owner script failed with no password again: $out"
+set_idle_lock "$second" 120
+printf '%s\n' "$password" | docker exec -i "$second" sh -c 'cat >/run/secrets/password'
+out=$(cexec "$second" /usr/lib/omanywhere/owner 2>&1) || fail "the owner script failed with a password again: $out"
+[[ $(cexec "$second" sh -c "test ! -e $idle_marker && jq .idle.lock $shell_json") == 120 ]] ||
+  fail "a password changed the idle.lock the owner set to 120, or left the marker"
+pass "idle.lock the owner set themselves (120) is left alone when a password comes"
+# A restore that fails keeps the marker, so the next boot tries again.
+cexec "$second" rm /run/secrets/password
+out=$(cexec "$second" /usr/lib/omanywhere/owner 2>&1) || fail "the owner script failed with no password again: $out"
+cexec "$second" chmod 0444 "$shell_json"
+printf '%s\n' "$password" | docker exec -i "$second" sh -c 'cat >/run/secrets/password'
+out=$(cexec "$second" /usr/lib/omanywhere/owner 2>&1) || fail "the owner script failed when shell.json can't be written: $out"
+[[ $out == *"can't be read or changed"* ]] || fail "the owner script did not warn that shell.json can't be changed: $out"
+cexec "$second" test -e "$idle_marker" || fail "a failed restore removed the marker"
+cexec "$second" chmod "$mode" "$shell_json"
+out=$(cexec "$second" /usr/lib/omanywhere/owner 2>&1) || fail "the owner script failed with a password: $out"
+[[ $(cexec "$second" sh -c "test ! -e $idle_marker && jq -r '.idle.lock // \"default\"' $shell_json") == default ]] ||
+  fail "the restore was not retried once shell.json could be written"
+pass "a restore that fails keeps the marker, and the next run restores Omarchy's default"
 
 # A DRM node in host gid 997, which is empower here, goes to video instead.
 cexec "$second" bash -c 'mkdir -p /dev/dri && mknod -m 0660 /dev/dri/card9 c 226 9 && chgrp 997 /dev/dri/card9' ||
   fail "can't make a test DRM node in gid 997"
 [[ $(cexec "$second" getent group 997 | cut -d: -f1) == empower ]] ||
   fail "gid 997 is not empower in the image; pick another polkit-trusted gid for this test"
-out=$(docker exec -e OMANYWHERE_SUDO= "$second" /usr/lib/omanywhere/owner 2>&1) || fail "the owner script failed with a DRM node in gid 997: $out"
+out=$(cexec "$second" /usr/lib/omanywhere/owner 2>&1) || fail "the owner script failed with a DRM node in gid 997: $out"
 node_group=$(cexec "$second" bash -c 'stat -c %G /dev/dri/card9; rm -f /dev/dri/card9')
 [[ $node_group == video ]] || fail "the DRM node in gid 997 is in group $node_group, not video"
 groups=" $(cexec "$second" id -nG "$user") "
@@ -240,10 +312,10 @@ start_container "$nokey"
 wait_running "$nokey" 120 >/dev/null || fail "$nokey: systemd did not finish booting"
 cexec "$nokey" systemctl is-failed --quiet omanywhere-owner.service || fail "the owner unit did not fail with no key"
 log=$(cexec "$nokey" journalctl -b -u omanywhere-owner.service --no-pager)
-grep -q 'no authorized key' <<<"$log" ||
-  fail "the journal does not say 'no authorized key'"
+grep -q 'no authorized key and no password' <<<"$log" ||
+  fail "the journal does not say 'no authorized key and no password'"
 cexec "$nokey" systemctl is-active --quiet sshd.service && fail "sshd is active although the owner unit failed"
-pass "no key: omanywhere-owner.service failed with 'no authorized key', and sshd is not active"
+pass "no key and no password: omanywhere-owner.service failed with 'no authorized key and no password', and sshd is not active"
 
 # --- A password in the environment, where docker inspect and the host's
 # process list show it: refused, even beside a good key, so the unit fails
@@ -281,8 +353,19 @@ owner_fails "group bob exists with gid 2000, not 2001" \
   OMANYWHERE_USER=bob OMANYWHERE_UID=2001 "OMANYWHERE_AUTHORIZED_KEYS=$good_key"
 owner_fails "OMANYWHERE_PASSWORD is in the environment" \
   OMANYWHERE_PASSWORD= "OMANYWHERE_AUTHORIZED_KEYS=$good_key"
-owner_fails "OMANYWHERE_SUDO 'yes' is not nopasswd" \
-  OMANYWHERE_SUDO=yes "OMANYWHERE_AUTHORIZED_KEYS=$good_key"
-pass "a bad key line is named by number; a group named after the user with another gid is refused; an empty OMANYWHERE_PASSWORD in the environment is refused too; so is OMANYWHERE_SUDO=yes"
+pass "a bad key line is named by number; a group named after the user with another gid is refused; an empty OMANYWHERE_PASSWORD in the environment is refused too"
+
+# A password and no key: the unit now starts, and sshd would take the password
+# and nothing else (not for root), from this one user alone. The real login is
+# tests/cli.sh's.
+printf '%s\n' "$password" | docker exec -i "$nokey" sh -c 'cat >/run/secrets/password'
+cexec "$nokey" systemctl restart omanywhere-owner.service || fail "the owner unit did not start with a password and no key"
+# $nokey has the image's default owner, omarchy (no OMANYWHERE_USER).
+out=$(cexec "$nokey" sshd -T -C "user=omarchy,host=localhost,addr=127.0.0.1")
+for want in 'passwordauthentication yes' 'authenticationmethods password' 'allowusers omarchy' 'permitrootlogin no' 'kbdinteractiveauthentication no'; do
+  grep -qix "$want" <<<"$out" || fail "a password and no key: sshd -T lacks '$want'"
+done
+[[ $(cexec "$nokey" stat -c '%a %U' /run/omanywhere/sshd/password.conf) == "644 root" ]] || fail "password.conf is not root's, 0644"
+pass "a password and no key: the owner unit starts; sshd takes the password only, for the owner only, never root (password.conf)"
 
 echo "owner test passed"
