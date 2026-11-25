@@ -127,37 +127,46 @@ volume_dir() {
 }
 
 # check_volumes: the volumes that exist already keep their files where they
-# are: up never moves them. Without --data, data takes their directory. It
-# sets missing to the volumes (home, state) that make_volumes makes.
+# are: up never moves them, and data takes their directory. It sets missing
+# to the volumes (home, state) that make_volumes makes. Each desktop has its
+# own DIR/NAME, so two never share a home and host key.
 check_volumes() {
-  local sub have absent=()
+  local sub have given=$data absent=()
   for sub in home state; do
     if ! have=$(volume_dir "$container-$sub"); then
       absent+=("$sub")
     elif [[ -z $have ]]; then
-      [[ -z $data ]] ||
-        die "$container-$sub is in Docker's own volume store, not $data/$sub, and up doesn't move a desktop's files: --data applies to new volumes (down $name --purge removes these)"
+      [[ -z $given ]] ||
+        die "$container-$sub is in Docker's own volume store, not $given/$name/$sub, and up doesn't move a desktop's files: --data applies to new volumes (down $name --purge removes these)"
     else
-      data=${data:-${have%/*}}
-      [[ $have == "$data/$sub" ]] ||
-        die "$container-$sub keeps its files in $have, not $data/$sub, and up doesn't move them: pass --data ${have%/*}, or leave it out"
+      [[ $have == /*/"$name/$sub" ]] ||
+        die "$container-$sub keeps its files in $have, not in a DIR/$name/$sub, and up doesn't move them: move them there and remove the volumes (down $name --purge), then up $name --data DIR"
+      [[ -z $given || $have == "$given/$name/$sub" ]] ||
+        die "$container-$sub keeps its files in $have, not $given/$name/$sub, and up doesn't move them: pass --data ${have%/*/*}, or leave it out"
       [[ -d $have ]] ||
         die "$container-$sub keeps its files in $have, which is gone: put them back there, or remove the volumes (down $name --purge)"
+      data=${have%/*/*}
     fi
   done
   missing=()
-  [[ -z $data ]] || missing=("${absent[@]}")
+  [[ -n $data ]] || return 0
+  missing=("${absent[@]}")
+  ((${#missing[@]})) || return 0
+  for sub in "" /home /state; do
+    [[ ! -L $data/$name$sub ]] || die "$data/$name$sub is a symlink, which Docker would follow: --data makes its directories itself"
+  done
 }
 
-# make_volumes: with --data, the missing volumes, in DIR/home and DIR/state.
+# make_volumes: with --data, the missing volumes, in DIR/NAME/home and
+# DIR/NAME/state.
 # Docker fills an empty one from the image, as it does a volume in its own
 # store, and uses a directory with files as it is.
 make_volumes() {
   local sub
   for sub in "${missing[@]}"; do
-    (umask 077 && mkdir -p -- "$data/$sub") || die "could not make $data/$sub"
-    docker volume create --opt type=none --opt o=bind --opt "device=$data/$sub" "$container-$sub" >/dev/null ||
-      die "could not make the volume $container-$sub in $data/$sub"
+    (umask 077 && mkdir -p -- "$data/$name/$sub") || die "could not make $data/$name/$sub"
+    docker volume create --opt type=none --opt o=bind --opt "device=$data/$name/$sub" "$container-$sub" >/dev/null ||
+      die "could not make the volume $container-$sub in $data/$name/$sub"
   done
 }
 

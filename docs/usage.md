@@ -76,7 +76,7 @@ container, run `down NAME` and then `up NAME --option`.
 | `--drm-master allow` | off | Lets the desktop take DRM master of a GPU that no display server holds (see [DRM master](#drm-master)). |
 | `--password` | off | Gives the owner a password, so sudo and polkit ask for it, and the idle lock stays on. `up` makes a random one in `~/.config/omanywhere/NAME/password`, or keeps the one already there (write your own first, one non-blank line). Without a password, sudo and polkit ask the owner for none, as in Toolbox, and the idle lock is off. Any program running as the owner, a bad package or a browser exploit say, can then become root in the container. With rootful Docker, root in the container is uid 0 on the host, held back only by the container's limits. With no key either, the desktop is [password-only](#password-only-desktops). |
 | `--no-password` | | Deletes `~/.config/omanywhere/NAME/password`, so the next container has none. |
-| `--data DIR` | Docker's volume store | Keeps the volumes' files in `DIR/home` and `DIR/state`, where the host's own backups can reach them (see [Keeping the volumes in a directory](#keeping-the-volumes-in-a-directory)). |
+| `--data DIR` | Docker's volume store | Keeps the volumes' files in `DIR/NAME/home` and `DIR/NAME/state`, where the host's own backups can reach them (see [Keeping the volumes in a directory](#keeping-the-volumes-in-a-directory)). |
 
 `--key` and `--github` also work on a container that already exists. `up` rewrites its keys
 file, and the new keys take effect at the container's next start. Without either, the keys
@@ -116,28 +116,33 @@ and run `up` again.
 ### Keeping the volumes in a directory
 
 By default the two volumes live in Docker's own store, under `/var/lib/docker/volumes`.
-`up NAME --data DIR` makes them in a directory you choose instead: `DIR/home` holds the owner's
-home and `DIR/state` the container's identity. They are still Docker volumes, made with
-`docker volume create --opt type=none --opt o=bind --opt device=DIR/home`, so Docker fills an
-empty one from the image, as it does any volume, and the first boot is the same.
+`up NAME --data DIR` makes them in a directory you choose instead: `DIR/NAME/home` holds the
+owner's home and `DIR/NAME/state` the container's identity. Several desktops can share one
+`DIR`, each in its own `DIR/NAME`. They are still Docker volumes, made with
+`docker volume create --opt type=none --opt o=bind --opt device=DIR/NAME/home`, so Docker fills
+an empty one from the image, as it does any volume, and the first boot is the same.
 
 - **Backups.** The host's own backup reaches the files: a btrfs or ZFS snapshot of `DIR`, or
-  restic or rsync run as root. Much of `DIR/state` and parts of `DIR/home` are root's. The files
-  keep their modes from the container, so the owner's home is 0700 and the ssh host key 0600,
-  and the directories `up` makes, `DIR` among them, are 0700. A snapshot taken while the desktop
+  restic or rsync run as root. Much of `state` and parts of `home` are root's. The files keep
+  their modes from the container, so the owner's home is 0700 and the ssh host key 0600. The
+  directories `up` makes, `DIR` if it's new and `DIR/NAME`, are 0700, so only root reaches the
+  files inside; a `DIR` you made keeps its own owner and mode. A snapshot taken while the desktop
   runs holds every file as at one instant, as after a power cut, which browsers and databases
   recover from. A copy file by file can catch a browser profile or a database mid-write, so for
   that, stop the container first (`docker stop omanywhere-NAME`, then `up NAME`).
 - **Moving or restoring.** A directory that already holds files is used as it is, so copying
-  `DIR` to another host, as root to keep the owners, and running `up NAME --data DIR` with the
+  `DIR/NAME` to another host, as root to keep the owners, and running `up NAME --data DIR` with the
   same keys brings the desktop back with its home, machine-id and ssh host key.
 - **Only when the volumes are made.** `up` never moves a desktop's files. With volumes in
   Docker's store, or in another directory, `up --data` refuses and says where they are. To
   move them, copy the files and run `down NAME --purge`, then `up NAME --data DIR`.
-- **Removing.** `down NAME --purge` removes the volumes but not `DIR`'s files, since `up` won't
+- **Removing.** `down NAME --purge` removes the volumes but not their files, since `up` won't
   delete a directory you named. It says where they are; delete them as root.
 
 `DIR` is a host path, so this is for Docker on the same host. It has no comma, and isn't `/`.
+`up` refuses to make volumes in a `DIR/NAME`, `home` or `state` that is a symlink. `DIR` needs a Linux
+filesystem that keeps owners and modes (ext4, btrfs, XFS, ZFS), not NTFS or FAT, or sshd and
+the owner's setup fail on the lost modes.
 
 ### Health
 
