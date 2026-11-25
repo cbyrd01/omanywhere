@@ -65,11 +65,12 @@ container, run `down NAME` and then `up NAME --option`.
 | Option | Default | Meaning |
 |---|---|---|
 | `--gpu auto\|none\|nvidia\|dri\|dri:/dev/dri/cardN` | `auto` | The DRM card the desktop runs on (see [CPU and GPU hosts](#cpu-and-gpu-hosts)). |
-| `--key FILE` | your ssh agent's keys | The public keys that may log in. `up` copies them to the config directory. |
+| `--key FILE` | your ssh agent's keys | The public keys that may log in. `up` copies them to the config directory. With no key and no `--password`, `up` refuses. |
 | `--github USER` | | Instead of `--key`: the public keys GitHub publishes for USER at `https://github.com/USER.keys`. Whoever holds that account can log in, so `up` shows the keys' fingerprints and asks first. Without a terminal, add `--yes`. |
 | `--listen ADDR` | `127.0.0.1` | The address ssh is published on, such as a tailnet address. |
 | `--drm-master allow` | off | Lets the desktop take DRM master of a GPU that no display server holds (see [DRM master](#drm-master)). |
-| `--sudo nopasswd\|password` | `password` | With `nopasswd`, sudo asks the owner for no password, as in Toolbox; `password` asks again. Any program running as the owner, a bad package or a browser exploit say, can then become root in the container without one. As root it can also read the password file, so the lock screen no longer stops it. With rootful Docker, root in the container is uid 0 on the host, held back only by the container's limits. |
+| `--password` | off | Gives the owner a password, so sudo and polkit ask for it, and the idle lock stays on. `up` makes a random one in `~/.config/omanywhere/NAME/password`, or keeps the one already there (write your own first, one non-blank line). Without a password, sudo and polkit ask the owner for none, as in Toolbox, and the idle lock is off. Any program running as the owner, a bad package or a browser exploit say, can then become root in the container. With rootful Docker, root in the container is uid 0 on the host, held back only by the container's limits. With no key either, the desktop is [password-only](#password-only-desktops). |
+| `--no-password` | | Deletes `~/.config/omanywhere/NAME/password`, so the next container has none. |
 
 `--key` and `--github` also work on a container that already exists. `up` rewrites its keys
 file, and the new keys take effect at the container's next start. Without either, the keys
@@ -83,14 +84,16 @@ container listed there, and nothing more.
 
 On the first `up`, the config directory gets these files:
 
-- `password`, mode 0600: a random password for the owner's sudo and lock screen. It's mounted
-  read-only at `/run/secrets/password`, which only root in the container can read. It never
-  appears in a command line or in the container's environment. Read it with
-  `cat ~/.config/omanywhere/NAME/password`.
-- `authorized_keys`, mounted read-only at `/run/secrets/authorized_keys`. Each line is a public
+- `password`, mode 0600, only with `--password`: a random password for the owner's sudo,
+  polkit and lock screen. It's mounted read-only at `/run/secrets/password`, which only root in
+  the container can read. It never appears in a command line or in the container's environment.
+  Read it with `cat ~/.config/omanywhere/NAME/password`. A container has a password when this
+  file holds a non-blank line, so an old config with a password file keeps it, and
+  `--no-password` is what deletes it. `up` refuses a blank file.
+- `authorized_keys`, mounted read-only at `/run/secrets/authorized_keys` (empty with no key). Each line is a public
   key, and may start with authorized_keys options such as `from="…"`, which sshd applies. A
   `command="…"` would run instead of gliff-server, so gliff can't use that key.
-- `settings`: the listen address, the port, `--gpu`, `--drm-master` and `--sudo`.
+- `settings`: the listen address, the port, `--gpu` and `--drm-master`.
 
 On the first `up`, Docker picks a free port for ssh, and `up` keeps it after that, so the
 `ssh-config` block stays right. If another program has taken that port by a later `up`, `up`
@@ -104,7 +107,7 @@ systemd doesn't finish booting in 3 minutes. Fix the input, such as with `up NAM
 and run `up` again.
 
 `down --purge` stops if Docker can't remove a volume, such as one another container uses. It
-names the volume and keeps the config directory, which holds that volume's password.
+names the volume and keeps the config directory, which holds that volume's password, if it has one.
 
 ### No restart policy
 
@@ -126,7 +129,7 @@ Every container gets these flags, from `lib/run-flags.bash`. The tests use the s
 |---|---|
 | `--cgroupns=private`, `--security-opt writable-cgroups=true` | systemd runs as PID 1 with no privilege, in a private cgroup namespace whose own subtree is writable. |
 | `--tmpfs /run`, `--tmpfs /run/lock`, `--tmpfs /tmp` | systemd expects a tmpfs at each of these. |
-| `--tmpfs /run/secrets:mode=0700` | The password and keys are bind-mounted inside this root-only directory. The files belong to your host user, whose uid is usually the owner's (1000), so the directory is what keeps the owner's programs from reading the sudo password. |
+| `--tmpfs /run/secrets:mode=0700` | The keys and the password, if any, are bind-mounted inside this root-only directory. The files belong to your host user, whose uid is usually the owner's (1000), so the directory is what keeps the owner's programs from reading the sudo password. |
 | `--security-opt seccomp=lib/seccomp.json` | Docker's default seccomp profile plus one rule: any process may call `clone` and `unshare` with namespace flags, as Podman's default profile allows. Docker's default allows that only with `CAP_SYS_ADMIN`, and Chromium's sandbox needs it: a user namespace, then a new PID namespace per renderer from inside it. Without the rule Chromium crashes at start. The kernel still decides the rest: a process outside a user namespace of its own gets no new mount, network or PID namespace. A rule allowing only calls that make a user namespace would block no more kernel code, since such a call can ask for every other namespace too, and it breaks Chromium's per-renderer PID namespaces. The cost is [below](#seccomp-and-namespaces). `scripts/seccomp-profile` makes the file from Docker's profile (moby, Apache License 2.0) for the tag the script names; rerun it when Docker's default changes. |
 | `--tty` | It gives systemd a console. See [below](#--tty-and-docker-logs). |
 
@@ -135,9 +138,9 @@ Every container gets these flags, from `lib/run-flags.bash`. The tests use the s
 - `--name omanywhere-NAME`, and `--hostname NAME`, so the shell prompt and the console show
   the name;
 - `--pull never`, because the image is local (`make image`) and is never pulled;
-- the two volumes, the two secret files (read-only) and the device;
-- `-e OMANYWHERE_DRM_MASTER=allow`, with `--drm-master allow`, and `-e OMANYWHERE_SUDO=nopasswd`,
-  with `--sudo nopasswd`;
+- the two volumes, the keys file and, with a password, the password file (both read-only), and
+  the device;
+- `-e OMANYWHERE_DRM_MASTER=allow`, with `--drm-master allow`;
 - `-p ADDR:PORT:22`.
 
 It never uses `--privileged`, `--cap-add`, a restart policy, or the host's network or cgroups.
@@ -172,7 +175,30 @@ console output to `/dev/null`. With one, `docker logs omanywhere-NAME` shows:
 
 ## ssh
 
-ssh is the only way in. It takes keys only and never logs in as root.
+ssh is the only way in. It takes keys only, except for a [password-only desktop](#password-only-desktops), and never logs in as root.
+
+### Password-only desktops
+
+`up NAME --password` with no `--key`, `--github` or keys kept from an earlier `up` makes a
+desktop with no ssh key: ssh then takes the owner's password, for the owner only, and nothing
+else. `up` doesn't take your agent's keys for it. To pick the password yourself, write it to
+`~/.config/omanywhere/NAME/password` (mode 0600, one line) before the first `up --password`;
+`up` keeps a password that is there, and otherwise makes a random one. With neither a key nor
+a password, `up` refuses.
+
+Any key given to the container makes ssh keys-only again, even with a password. A key the owner
+adds to their own `~/.ssh/authorized_keys` doesn't: while the container has no key of its own,
+ssh takes only the password. `up NAME --key FILE` adds one to an existing container, and
+applies it when the container next starts. The password then only serves sudo, polkit and the
+lock screen. Keys stay across `up`s: to go back to password-only,
+delete `~/.config/omanywhere/NAME/authorized_keys`, then `down NAME` and `up NAME`.
+
+With a `--listen` address other than `127.0.0.1`, `up` warns that ssh takes only the password
+there.
+
+The cost: anyone who can reach the ssh port can guess the password, as often as sshd allows.
+The random password is long enough to stand up to that. One you pick must be too, above all
+with `--listen` on an address other than `127.0.0.1`. Keys are still the safer way in.
 
 `up` publishes port 22 on `127.0.0.1:PORT`, so only this host can reach it.
 `ssh-config` prints:
@@ -195,7 +221,7 @@ To connect from another machine, choose one of these:
 - Add `ProxyJump you@this-host` to the block on that machine. ssh then goes through this host.
 - Make the container with `--listen` on an address the other machine can reach, such as
   `up desk --listen 100.64.1.2` for a tailnet address. Prefer a private network to a public
-  address: keys are the only lock on the door.
+  address: keys are the only lock on the door (the password, on a password-only desktop).
 
 ## gliff
 
@@ -339,6 +365,14 @@ Start with `omanywhere status NAME`.
 - **`no usable DRM card: ... (vkms: held by another process ...)`.** See
   [DRM master](#drm-master), then give the container a new card: `down NAME`, then
   `up NAME --gpu dri:/dev/dri/cardN`.
+- **A manual lock (the keybinding or the menu) can't be unlocked.** With no password there is
+  nothing to unlock it with. The owner script turns the idle lock off (`idle.lock` is `0` in the
+  owner's `~/.config/omarchy/shell.json`), but a manual lock still works. Run
+  `docker exec omanywhere-NAME systemctl restart omanywhere-session`: it starts the desktop again
+  and drops the lock. Then connect again with gliff. Or make the container with `--password`
+  (`down NAME`, then `up NAME --password`), and the lock takes it. A boot with a password over
+  the same home removes the `idle.lock` line that the owner script set (Omarchy's default of
+  300 applies again), unless you changed it yourself.
 - **`owner failed`.** Run `docker exec omanywhere-NAME journalctl -b -u omanywhere-owner`.
   Usually a key line isn't a key.
 - **The desktop restarts, or is `failed`.** Run `docker exec omanywhere-NAME journalctl -b -u

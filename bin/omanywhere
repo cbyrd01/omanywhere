@@ -4,14 +4,15 @@
 #
 #   omanywhere up NAME [--gpu auto|none|nvidia|dri|dri:/dev/dri/cardN]
 #                      [--key FILE | --github USER [--yes]] [--listen ADDR]
-#                      [--drm-master allow] [--sudo nopasswd|password]
+#                      [--drm-master allow] [--password | --no-password]
 #   omanywhere down NAME [--purge [--yes]]
 #   omanywhere ssh-config NAME
 #   omanywhere status NAME
 #
 # NAME's container is omanywhere-NAME, with the named volumes
 # omanywhere-NAME-home (/home) and omanywhere-NAME-state (/var/lib/omanywhere).
-# Its password, keys and settings are kept in OMANYWHERE_CONFIG_DIR/NAME
+# Its keys and settings, and its password if it has one (up --password), are
+# kept in OMANYWHERE_CONFIG_DIR/NAME
 # (default ~/.config/omanywhere/NAME, mode 0700). OMANYWHERE_IMAGE is the image
 # (default omanywhere:dev, built by make image); it is never pulled.
 set -euo pipefail
@@ -34,7 +35,7 @@ usage() {
   cat >&2 <<'EOF'
 usage: omanywhere up NAME [--gpu auto|none|nvidia|dri|dri:/dev/dri/cardN]
                      [--key FILE | --github USER [--yes]] [--listen ADDR] [--drm-master allow]
-                     [--sudo nopasswd|password]
+                     [--password | --no-password]
        omanywhere down NAME [--purge [--yes]]
        omanywhere ssh-config NAME
        omanywhere status NAME
@@ -68,7 +69,7 @@ set_name() {
 
 # --- Settings kept in $config/settings, one key=value per line: what the
 # first up chose, which later ups reuse.
-listen='' port='' gpu='' drm_master='' sudo=''
+listen='' port='' gpu='' drm_master='' old_sudo=''
 
 # check KEY VALUE WHERE: VALUE is valid for the setting KEY, or die saying
 # what WHERE (an option, or the settings file) takes. The options and the
@@ -83,8 +84,6 @@ check() {
     listen) [[ $2 =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ || ($2 =~ ^[0-9A-Fa-f:.]+$ && $2 == *:*) ]] ||
       die "$3 '$2': takes an IPv4 or IPv6 address, such as 127.0.0.1 or a tailnet address" ;;
     drm_master) [[ $2 == allow ]] || die "$3 '$2': takes allow" ;;
-    # password, the default, is saved as an empty value.
-    sudo) [[ $2 == nopasswd || $2 == password ]] || die "$3 '$2': takes nopasswd or password" ;;
     port) [[ $2 =~ ^[1-9][0-9]{0,4}$ && $2 -le 65535 ]] || die "$3 '$2': takes a TCP port" ;;
     # GitHub's rule: letters, digits and single inner hyphens, up to 39
     # characters. It also keeps the URL's path to one component.
@@ -98,16 +97,19 @@ load_settings() {
   [[ -f $settings ]] || return 1
   while IFS='=' read -r key value; do
     case $key in
-      listen | port | gpu | drm_master | sudo)
+      listen | port | gpu | drm_master)
         [[ -z $value ]] || check "$key" "$value" "$settings: $key"
         printf -v "$key" '%s' "$value"
         ;;
+      # An older omanywhere's --sudo, gone: a password now decides (up says so).
+      sudo) [[ $value != nopasswd ]] || old_sudo=1 ;;
+      # Other keys are ignored.
     esac
   done <"$settings"
 }
 
 save_settings() {
-  printf '%s\n' "listen=$listen" "port=$port" "gpu=$gpu" "drm_master=$drm_master" "sudo=$sudo" >"$settings.new"
+  printf '%s\n' "listen=$listen" "port=$port" "gpu=$gpu" "drm_master=$drm_master" >"$settings.new"
   mv "$settings.new" "$settings"
 }
 
@@ -226,8 +228,15 @@ pick_port() {
   [[ $port =~ ^[0-9]+$ ]] || die "Docker gave no port on $1: $out"
 }
 
-# --- Secrets. The password is made here and only ever written to a file:
-# never an argument, the container's environment, or the terminal.
+# --- Secrets. The password file is the setting: a container has a password
+# when $config/password holds a non-blank line. up --password makes one (or
+# keeps the one there, such as one written by hand), --no-password deletes it.
+# It is only ever written to a file: never an argument, the container's
+# environment, or the terminal.
+
+has_password() {
+  grep -q '[^[:space:]]' "$config/password" 2>/dev/null
+}
 
 make_password() {
   [[ -s $config/password ]] && return
@@ -268,7 +277,10 @@ github_keys() {
 
 # new_keys KEYFILE GITHUB_USER: print the keys up should give the container:
 # --key KEYFILE's or --github GITHUB_USER's, else nothing if keys kept from an
-# earlier up stay, else the ssh agent's. Fails, saying so, when there is none.
+# earlier up stay, else (with a password: nothing, a password-only desktop, and
+# the agent's keys are not taken) the ssh agent's. Fails, saying so, when there
+# is none and no password. Keys kept from an earlier up stay until you delete
+# $config/authorized_keys.
 new_keys() {
   local keyfile=$1 github=$2 keys
   if [[ -n $keyfile ]]; then
@@ -279,20 +291,28 @@ new_keys() {
     keys=$(github_keys "$github") || exit 1
   elif [[ -f $config/authorized_keys ]] && has_key "$(<"$config/authorized_keys")"; then
     return
+  elif [[ -n $password ]]; then
+    say "no ssh key: ssh will take the password in $config/password (up --key FILE or --github USER adds a key, and then ssh takes keys only)"
+    return
   # A locked agent (1Password's, say) can wait for approval: don't wait long.
   elif keys=$(timeout 10 ssh-add -L 2>/dev/null) && has_key "$keys"; then
     say "using the keys in your ssh agent (ssh-add -L)"
   else
-    die "no ssh key: pass --key FILE (a public key, such as ~/.ssh/id_ed25519.pub) or --github USER, or add a key to your ssh agent (ssh-add -L lists none). ssh is the only way in."
+    die "no ssh key and no password: pass --key FILE (a public key, such as ~/.ssh/id_ed25519.pub) or --github USER, or add a key to your ssh agent (ssh-add -L lists none), or pass --password to log in with a password instead. ssh is the only way in."
   fi
   printf '%s\n' "$keys"
 }
 
-# write_keys KEYS: KEYS (if any) to $config/authorized_keys. Rewritten in
-# place: an existing container has the file bind-mounted, and a new file (a
-# rename) wouldn't reach it.
+# write_keys KEYS: KEYS (if any) to $config/authorized_keys, which exists
+# afterwards, empty with no key at all (the container always mounts it).
+# Rewritten in place: an existing container has the file bind-mounted, and a
+# new file (a rename) wouldn't reach it.
 write_keys() {
-  [[ -z $1 ]] || (umask 077 && printf '%s\n' "$1" >"$config/authorized_keys")
+  if [[ -n $1 ]]; then
+    (umask 077 && printf '%s\n' "$1" >"$config/authorized_keys")
+  elif [[ ! -e $config/authorized_keys ]]; then
+    (umask 077 && : >"$config/authorized_keys")
+  fi
 }
 
 # --- Waiting for, and reporting on, the container's systemd. tests/lib.sh
@@ -379,7 +399,7 @@ endpoint() {
 # --- Commands.
 
 cmd_up() {
-  local keyfile='' github='' yes='' opt_gpu='' opt_listen='' opt_master='' opt_sudo='' state keys
+  local keyfile='' github='' yes='' opt_gpu='' opt_listen='' opt_master='' opt_password='' state keys password=''
   set_name "${1:-}"
   shift
   while (($#)); do
@@ -409,9 +429,15 @@ cmd_up() {
         check drm_master "${2:-}" --drm-master
         opt_master=$2
         ;;
-      --sudo)
-        check sudo "${2:-}" --sudo
-        opt_sudo=$2
+      --password)
+        opt_password=yes
+        shift
+        continue
+        ;;
+      --no-password)
+        opt_password=no
+        shift
+        continue
         ;;
       *) usage ;;
     esac
@@ -422,8 +448,8 @@ cmd_up() {
   docker image inspect "$image" >/dev/null 2>&1 || die "image $image not found: build it with make image"
 
   state=$(container_state)
-  [[ $state == absent || -z $opt_gpu$opt_listen$opt_master$opt_sudo ]] ||
-    say "ignoring --gpu, --listen, --drm-master and --sudo: $container exists, and they apply when it's made (omanywhere down $name, then up)"
+  [[ $state == absent || -z $opt_gpu$opt_listen$opt_master$opt_password ]] ||
+    say "ignoring --gpu, --listen, --drm-master, --password and --no-password: $container exists, and they apply when it's made (omanywhere down $name, then up)"
   if [[ $state == running ]]; then
     if [[ -n $keyfile$github ]]; then
       keys=$(new_keys "$keyfile" "$github") || exit 1
@@ -440,15 +466,33 @@ cmd_up() {
     gpu=${opt_gpu:-${gpu:-auto}}
     listen=${opt_listen:-${listen:-127.0.0.1}}
     drm_master=${opt_master:-$drm_master}
-    sudo=${opt_sudo:-$sudo}
-    [[ $sudo != password ]] || sudo=''
-    [[ -n $opt_sudo || -z $sudo ]] || say "sudo asks for no password, as the settings keep from an earlier up --sudo nopasswd (up --sudo password to ask again)"
     gpu_args "$gpu"
+    if [[ -e $config/password && $opt_password != no ]]; then
+      has_password || die "$config/password is blank: write a password in it, or delete it, or pass --no-password"
+      [[ $(<"$config/password") != *$'\n'* ]] ||
+        die "$config/password has more than one line: the password is its one line"
+    fi
+    if [[ $opt_password == yes ]] || { [[ $opt_password != no ]] && has_password; }; then password=yes; fi
+    [[ -z $old_sudo || -n $opt_password ]] ||
+      say "$settings has sudo=nopasswd from an older omanywhere, which no longer applies: a container with a password asks for it (up $name --no-password deletes $config/password, and then sudo asks for none)"
+  else
+    # An existing container keeps what it was made with: a password if it
+    # mounts one, which must still be there to start it.
+    opt_password=''
+    local mounted
+    mounted=$(docker container inspect -f '{{range .Mounts}}{{if eq .Destination "/run/secrets/password"}}y{{end}}{{end}}' "$container") ||
+      die "could not inspect $container"
+    [[ -z $mounted ]] || password=yes
+    [[ -z $password ]] || has_password ||
+      die "$container was made with a password, and $config/password is gone or blank: write it back, or omanywhere down $name, then up"
   fi
   keys=$(new_keys "$keyfile" "$github") || exit 1
   (umask 077 && mkdir -p "$config")
   write_keys "$keys"
-  make_password
+  [[ -z $opt_password || -z $password ]] || make_password
+  if [[ -n $password && -n $listen && $listen != 127.* && $listen != ::1 ]] && ! has_key "$(<"$config/authorized_keys")"; then
+    say "warning: no ssh key, so ssh on $listen takes only the password; anyone who can reach that address can guess it. Add a key (up $name --key FILE) or listen on 127.0.0.1"
+  fi
 
   if [[ $state != absent ]]; then
     say "starting $container ($state)"
@@ -458,7 +502,8 @@ cmd_up() {
     say "making $container from $image: $gpu_note"
     local env=() bind out
     [[ -z $drm_master ]] || env+=(-e OMANYWHERE_DRM_MASTER=allow)
-    [[ -z $sudo ]] || env+=(-e OMANYWHERE_SUDO=nopasswd)
+    local secrets=()
+    [[ -z $password ]] || secrets=(-v "$config/password:/run/secrets/password:ro")
     bind=$listen
     [[ $listen != *:* ]] || bind="[$listen]"
     # The first up picks the port; later ones keep it, so ssh's address
@@ -475,7 +520,7 @@ cmd_up() {
         -p "$bind:$port:22" \
         -v "$home_volume:/home" -v "$state_volume:/var/lib/omanywhere" \
         -v "$config/authorized_keys:/run/secrets/authorized_keys:ro" \
-        -v "$config/password:/run/secrets/password:ro" \
+        "${secrets[@]}" \
         "$image" 2>&1) && break
       docker rm -f "$container" >/dev/null 2>&1 || true
       if [[ -z $picked ]]; then
@@ -487,6 +532,11 @@ If another program has taken port $port, free it and run up again, or delete the
       port=
     done
     save_settings
+    # Only once the container is made, so a failed up keeps the file.
+    if [[ $opt_password == no && -e $config/password ]]; then
+      rm -f "$config/password"
+      say "deleted $config/password: $container has no password"
+    fi
   fi
 
   say "waiting for systemd in $container"
@@ -526,7 +576,7 @@ cmd_down() {
     shift
   done
   if [[ -n $purge && -z $yes ]]; then
-    local what="$container, the volumes $home_volume and $state_volume (the owner's home and the container's identity), and $config (its password and keys)"
+    local what="$container, the volumes $home_volume and $state_volume (the owner's home and the container's identity), and $config (its keys and settings, and its password if it has one)"
     [[ -t 0 ]] || die "--purge removes $what; pass --yes to confirm without a terminal"
     read -r -p "Remove $what? [y/N] " answer
     [[ $answer =~ ^[Yy]([Ee][Ss])?$ ]] || die "nothing removed"
@@ -549,7 +599,7 @@ cmd_down() {
         kept+=("$volume")
       }
     done
-    # The config holds the password for what the volumes keep.
+    # The config holds the password, if any, for what the volumes keep.
     ((${#kept[@]} == 0)) || die "kept $config, as ${kept[*]} remains; run down $name --purge again once nothing uses it"
     rm -rf -- "$config"
     say "removed the volumes $home_volume and $state_volume, and $config"
