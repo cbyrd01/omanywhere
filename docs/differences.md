@@ -33,6 +33,7 @@ on 2026-11-24.
 |---|---|---|
 | Arch's base image, pinned by digest and cosign-verified (`make verify-base`) | Arch | Official images only. Its date must not be after Omarchy's stable snapshot. |
 | The final image is `FROM scratch` plus a copy of the built root, with `container=docker`, `STOPSIGNAL SIGRTMIN+3` and systemd as the command | Arch | systemd as PID 1, as systemd's container interface documents. No build layers ship. |
+| A `HEALTHCHECK` that runs `/usr/lib/omanywhere/health` | Arch | `docker ps` shows when systemd, sshd or the desktop is down ([Health](usage.md#health)). |
 | Arch's second `[options]` block (the `NoExtract` of docs, locales and man pages) removed, and every package reinstalled | Arch | The desktop gets the files Arch's image strips. |
 | `/etc/pacman.d/gnupg` removed | Arch and Omarchy | No pacman master key shared by every container. Omarchy's first boot makes a new keyring. |
 | `/etc/ssh/ssh_host_*` removed | Arch | No host keys baked in. Each state volume gets its own on first boot. |

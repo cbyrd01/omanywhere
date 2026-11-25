@@ -299,7 +299,10 @@ grep -Eq '^systemd +running' <<<"$out" || fail "status does not say systemd is r
 grep -Eq "^owner +active \($user\)" <<<"$out" || fail "status does not show the owner unit active for $user"
 grep -Eq '^desktop +skipped: .*no DRM card' <<<"$out" || fail "status does not say why the desktop was skipped"
 grep -Eq "^ssh +127\.0\.0\.1:$port" <<<"$out" || fail "status does not show the ssh endpoint"
-pass "status shows the container, systemd, owner, desktop and ssh"
+health=$(wait_healthy "$container" 30) || fail "docker reports $container $health, not healthy"
+out=$("$cli" status "$name") || fail "status failed"
+grep -Eq '^health +healthy$' <<<"$out" || fail "status does not say the container is healthy: $out"
+pass "status shows the container, systemd, owner, desktop, health and ssh"
 
 # --- ssh-config, and ssh through it.
 "$cli" ssh-config "$name" >"$tmp/ssh_config" || fail "ssh-config failed"

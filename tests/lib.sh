@@ -171,3 +171,16 @@ remove_volumes() {
     docker volume rm -f "$name" >/dev/null 2>&1 || true
   done
 }
+
+# wait_healthy NAME SECONDS: wait until Docker reports NAME healthy (the
+# image's HEALTHCHECK); fails, printing the last status, if it isn't by then.
+wait_healthy() {
+  local health='' deadline=$((SECONDS + $2))
+  while ((SECONDS < deadline)); do
+    health=$(docker container inspect -f '{{with .State.Health}}{{.Status}}{{else}}without a healthcheck{{end}}' "$1")
+    [[ $health != healthy ]] || return 0
+    sleep 1
+  done
+  echo "$health"
+  return 1
+}
