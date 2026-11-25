@@ -46,7 +46,10 @@ write_files:
         pacman -Syu --noconfirm --needed git
         rm -rf /opt/omanywhere.new
         git clone -q https://github.com/cbyrd01/omanywhere /opt/omanywhere.new
-        git -C /opt/omanywhere.new checkout -q --detach "$OMANYWHERE_REF" --
+        # A branch is only origin's in a fresh clone; a tag or commit is as given.
+        commit=$(git -C /opt/omanywhere.new rev-parse --verify -q --end-of-options "origin/$OMANYWHERE_REF^{commit}" ||
+          git -C /opt/omanywhere.new rev-parse --verify --end-of-options "$OMANYWHERE_REF^{commit}")
+        git -C /opt/omanywhere.new checkout -q --detach "$commit"
         mv /opt/omanywhere.new /opt/omanywhere
       fi
       # The upgrade replaced the kernel: its modules (vkms, Docker's) are
