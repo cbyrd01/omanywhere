@@ -29,7 +29,7 @@ make test-boot    # boot the image under systemd with no privilege and check it 
 make test-owner   # the owner account, ssh, and recreating over the same volumes (tests/owner.sh)
 make test-session-logic # the session's card, DRM master and monitor-rule decisions, no device
 make test-cli     # bin/omanywhere up, status, ssh-config and down, no device (tests/cli.sh)
-make test         # these four; the no-card desktop case is in tests/boot.sh
+make test         # boot, owner, session-logic and cli; tests/boot.sh has the no-card desktop case
 make test-desktop # the desktop session on a card (tests/desktop.sh): set
                   # OMANYWHERE_TEST_DEVICES, such as --device nvidia.com/gpu=all
 make test-desktop-vm # the desktop in a KVM guest, never touching the host's display: a GPU

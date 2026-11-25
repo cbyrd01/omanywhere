@@ -74,8 +74,8 @@ Estimates for one desktop, not yet tested at these limits:
 - gliff-server, from Omarchy's base packages, captures the desktop and injects input through
   Wayland, so the container needs no input devices or seat. The container sets gliff's video
   and capture modes for its card, so a plain gliff client needs no flags.
-- ssh is the only way in. It takes keys, or, on a
-  [password-only desktop](docs/usage.md#password-only-desktops), only the password.
+- ssh is the only way in. It takes keys, or only the password on a
+  [password-only desktop](docs/usage.md#password-only-desktops).
 - The container runs with no `--privileged`, no added capabilities, and no host network or
   cgroups. Its seccomp profile is Docker's default plus the namespaces Chromium's sandbox
   needs. [The run flags](docs/usage.md#the-run-flags) explains each one, and how to run the
@@ -84,7 +84,7 @@ Estimates for one desktop, not yet tested at these limits:
 ## Security
 
 - With no password, any program running as the owner can become root in the container. With
-  rootful Docker, that is uid 0 on the host, held back by the container's limits. Use
+  rootful Docker, that is uid 0 on the host, confined only by the container's limits. Use
   `--password` where that matters.
 - On a GPU that the host's own display also uses, a process in the container can take DRM
   master while no host display server holds it (at a text console, or logged out), and lock

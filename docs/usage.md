@@ -382,7 +382,9 @@ modeset fails and its monitor stays at 0x0, so the session passes over such a ca
 next free one, and says why when none is left. On a host with a desktop of its own, that process
 is the host's desktop: see the udev rule under [CPU and GPU hosts](#cpu-and-gpu-hosts).
 
-The guard covers only Hyprland's start. The owner is in the card's group, so any process in
+The session checks master again just before it starts Hyprland, but master can still change
+hands in the moment before Hyprland opens the card, and that gap can't be closed while Hyprland
+opens the card itself. The guard also covers only Hyprland's start. The owner is in the card's group, so any process in
 the container can open the card. While no host display server holds master (at a text
 console, logged out, or before the display manager starts), that process becomes master and
 locks the host's display out until it exits. Don't run untrusted code in a container on a GPU
