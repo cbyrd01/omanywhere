@@ -13,7 +13,7 @@ RemainAfterExit=yes
 # The inputs given with docker run -e, from the container's environment.
 # OMANYWHERE_PASSWORD is passed only so the owner script can refuse it: the
 # password is taken only as a file.
-PassEnvironment=OMANYWHERE_USER OMANYWHERE_UID OMANYWHERE_AUTHORIZED_KEYS OMANYWHERE_PASSWORD TZ OMANYWHERE_DRM_MASTER OMANYWHERE_SUDO
+PassEnvironment=OMANYWHERE_USER OMANYWHERE_UID OMANYWHERE_AUTHORIZED_KEYS OMANYWHERE_PASSWORD TZ OMANYWHERE_DRM_MASTER
 ExecStart=/usr/lib/omanywhere/owner
 
 [Install]

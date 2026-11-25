@@ -56,6 +56,22 @@ test_key() {
   ssh-keygen -q -t ed25519 -N '' -C omanywhere-test -f "$1/id_ed25519"
 }
 
+# password_ssh PASSWORD_FILE SSH_ARGS...: ssh that tries the password in
+# PASSWORD_FILE and nothing else (no terminal: SSH_ASKPASS, forced), once.
+password_ssh() {
+  local file=$1 askpass status=0
+  shift
+  askpass=$(mktemp)
+  printf '#!/bin/sh\ncat %q\n' "$file" >"$askpass"
+  chmod 0700 "$askpass"
+  env SSH_ASKPASS="$askpass" SSH_ASKPASS_REQUIRE=force DISPLAY= ssh -F /dev/null -o BatchMode=no \
+    -o IdentitiesOnly=yes -o IdentityAgent=none -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+    -o LogLevel=ERROR -o ConnectTimeout=10 -o PreferredAuthentications=password -o PubkeyAuthentication=no \
+    -o NumberOfPasswordPrompts=1 "$@" || status=$?
+  rm -f "$askpass"
+  return "$status"
+}
+
 # wait_running NAME TIMEOUT: wait until systemd has finished booting and print
 # the state it reports then. Succeeds when that is running or degraded.
 # bin/omanywhere has its own (wait_booted, wait_settled): it doesn't source

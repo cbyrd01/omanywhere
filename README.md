@@ -88,7 +88,8 @@ image and a stock Omarchy install, and why.
 - A refused or skipped desktop stays down until the container restarts.
 - gliff-server, already in Omarchy's base packages, captures the desktop and injects input
   through Wayland. The container needs no `uinput`, input devices or seat.
-- Access is ssh only (`ssh host gliff-server --stdio`), with keys only. The session sets
+- Access is ssh only (`ssh host gliff-server --stdio`), with keys only, or with the password
+  on a desktop made with `up --password` and no key. The session sets
   `GLIFF_VIDEO` and `GLIFF_CAPTURE` for the card it chose, through sshd, so a plain gliff
   client needs no flags.
 - [Glifftop](https://github.com/cbyrd01/glifftop) or any other gliff client connects.
@@ -103,7 +104,7 @@ docker run -d --tty --cgroupns=private --security-opt writable-cgroups=true \
   --security-opt seccomp=lib/seccomp.json \
   --tmpfs /run --tmpfs /run/lock --tmpfs /tmp --tmpfs /run/secrets:mode=0700 \
   -v NAME-home:/home -v NAME-state:/var/lib/omanywhere \
-  -v ./authorized_keys:/run/secrets/authorized_keys:ro -v ./password:/run/secrets/password:ro \
+  -v ./authorized_keys:/run/secrets/authorized_keys:ro [-v ./password:/run/secrets/password:ro] \
   -p 127.0.0.1:2222:22 [--device nvidia.com/gpu=all | --device /dev/dri] omanywhere:dev
 ```
 
@@ -114,17 +115,22 @@ namespaces for Chromium's sandbox, with netfilter kept out of reach.
 The `omanywhere` package (`package/omanywhere/`) makes the owner account at boot from these
 inputs (`package/omanywhere/owner` has the details):
 
-- `OMANYWHERE_USER`, `OMANYWHERE_UID`, `TZ`, `OMANYWHERE_DRM_MASTER` and `OMANYWHERE_SUDO`
-  (`nopasswd`: sudo asks the owner for no password), with `docker run -e`;
-- the ssh keys: the file `/run/secrets/authorized_keys`, or `OMANYWHERE_AUTHORIZED_KEYS`;
-- the password for sudo and the lock screen: only the file `/run/secrets/password`, bound
-  read-only inside the root-only `/run/secrets` tmpfs as above. The owner unit fails if
-  `OMANYWHERE_PASSWORD` is in the environment, where `docker inspect` and the host's process
-  list would show it. With no password file, the owner's password is locked.
+- `OMANYWHERE_USER`, `OMANYWHERE_UID`, `TZ`, and `OMANYWHERE_DRM_MASTER`, with `docker run -e`;
+- the ssh keys: the file `/run/secrets/authorized_keys`, or `OMANYWHERE_AUTHORIZED_KEYS`. With
+  a password and no key, ssh takes the password instead; with keys, keys only;
+- the optional password for sudo, polkit and the lock screen: only the file
+  `/run/secrets/password`, bound read-only inside the root-only `/run/secrets` tmpfs as above
+  (leave the `-v ./password:...` out for none). The owner unit fails if `OMANYWHERE_PASSWORD` is
+  in the environment, where `docker inspect` and the host's process list would show it. With no
+  password file, the owner's password is locked, sudo and polkit ask the owner for none, and
+  Omarchy's idle lock is turned off in the owner's `shell.json` (restored when a password
+  comes). `omanywhere up` has a password only when its config has a `password` file
+  (`--password`).
 
 The keys given to the container are authoritative, and are set again on every boot. sshd
 reads them from `/run/omanywhere/authorized_keys/`. Keys that the owner adds to
-`~/.ssh/authorized_keys` themselves are kept.
+`~/.ssh/authorized_keys` themselves are kept, and log in too, except on a password-only
+desktop, where ssh takes only the password.
 
 State lives in two named volumes:
 
