@@ -38,6 +38,8 @@ make test-desktop-vm # the desktop in a KVM guest, never touching the host's dis
 make test-gliff   # a plain gliff client over ssh (tests/gliff.sh): set
                   # OMANYWHERE_TEST_GPU, up's --gpu, such as auto on an NVIDIA CDI host
 make test-gliff-vm # tests/gliff.sh in the KVM guest on vkms: the CPU-only leg
+make test-host-vm # bin/omanywhere-host setup and --gpu vkms in the KVM guest, over a reboot
+                  # (tests/host.sh; the guest's disk is a throwaway overlay)
 ```
 
 CI runs `make lint` and `make test` only, because its runners have no GPU, DRM card or
@@ -45,7 +47,7 @@ CI runs `make lint` and `make test` only, because its runners have no GPU, DRM c
 include the results of the legs that need a device:
 
 - `make test-desktop-vm` and `make test-gliff-vm` (a KVM guest; needs `/dev/kvm` and about
-  30 GB);
+  30 GB), and `make test-host-vm` for a change to `bin/omanywhere-host` or `--gpu vkms`;
 - `make test-desktop` and `make test-gliff` on a GPU host, when the change concerns one.
 
 ## The base image

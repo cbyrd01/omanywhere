@@ -1,0 +1,336 @@
+#!/bin/bash
+# omanywhere-host: set up an Arch Linux host for omanywhere, as root. See
+# docs/usage.md ("Setting up a host").
+#
+#   omanywhere-host setup [--vkms] [--yes]
+#   omanywhere-host vkms add NAME
+#   omanywhere-host vkms remove NAME
+#
+# setup installs Docker and make from Arch's repositories and enables
+# docker.socket. Then, for the host's GPU: NVIDIA's container toolkit and its
+# CDI spec, nothing for AMD or Intel, and on a host with neither (or with
+# --vkms) the vkms module, a udev rule that keeps vkms cards off the host's
+# seat, and the boot unit for per-container cards. It lists what it will
+# change and asks first (--yes skips the question), changes nothing that is
+# already in place, and adds no one to the docker group.
+#
+# vkms add NAME makes the vkms card for the container omanywhere-NAME
+# (bin/omanywhere up NAME --gpu vkms), now and at every boot
+# (omanywhere-vkms@NAME.service); vkms remove NAME removes it. The unit runs
+# this script's internal commands, vkms start NAME and vkms stop NAME.
+#
+# It changes only its own files: /usr/local/bin/omanywhere-host,
+# /etc/systemd/system/omanywhere-vkms@.service,
+# /etc/udev/rules.d/72-omanywhere-vkms.rules and
+# /etc/modules-load.d/omanywhere-vkms.conf, besides the packages and units
+# above.
+set -euo pipefail
+
+self=$(readlink -f "${BASH_SOURCE[0]}")
+installed=/usr/local/bin/omanywhere-host
+unit=/etc/systemd/system/omanywhere-vkms@.service
+rule=/etc/udev/rules.d/72-omanywhere-vkms.rules
+modules=/etc/modules-load.d/omanywhere-vkms.conf
+configfs=/sys/kernel/config/vkms
+
+usage() {
+  cat >&2 <<'EOF'
+usage: omanywhere-host setup [--vkms] [--yes]
+       omanywhere-host vkms add NAME
+       omanywhere-host vkms remove NAME
+See docs/usage.md.
+EOF
+  exit 2
+}
+
+say() {
+  echo "omanywhere-host: $*" >&2
+}
+
+die() {
+  say "$*"
+  exit 1
+}
+
+need_root() {
+  ((EUID == 0)) || die "run it as root: sudo $0 $*"
+}
+
+# check_name NAME: bin/omanywhere's rule for NAME, which is also a path
+# component here.
+check_name() {
+  [[ ${1:-} =~ ^[a-z0-9]([a-z0-9-]{0,30}[a-z0-9])?$ ]] ||
+    die "'${1:-}' is not a valid name: use 1 to 32 lower-case letters, digits and inner hyphens"
+}
+
+# --- What the host has.
+
+# nvidia_gpu: the host has an NVIDIA display controller (PCI vendor 0x10de,
+# class 0x03xxxx).
+nvidia_gpu() {
+  local dev
+  for dev in /sys/bus/pci/devices/*; do
+    [[ $(cat "$dev/vendor" 2>/dev/null) == 0x10de && $(cat "$dev/class" 2>/dev/null) == 0x03* ]] && return 0
+  done
+  return 1
+}
+
+# other_gpu: the host has an AMD or Intel GPU with a DRM card, which needs no
+# setup (bin/omanywhere up --gpu dri). Virtual display adapters (bochs,
+# virtio, simpledrm) don't count: a desktop needs vkms there.
+other_gpu() {
+  local card driver
+  for card in /sys/class/drm/card*; do
+    [[ $card =~ /card[0-9]+$ ]] || continue
+    driver=$(basename "$(readlink -f "$card/device/driver")")
+    [[ $driver =~ ^(amdgpu|radeon|i915|xe)$ ]] && return 0
+  done
+  return 1
+}
+
+# --- setup.
+
+# The files setup installs, kept here so the installed copy needs no checkout.
+read -r -d '' rule_text <<'EOF' || true
+# vkms cards are for containers' desktops: keep them off the host's seat
+# (omanywhere-host; see omanywhere's docs/usage.md, CPU and GPU hosts).
+SUBSYSTEM=="drm", KERNEL=="card[0-9]*", DRIVERS=="vkms|faux_driver", TAG-="seat", TAG-="master-of-seat", TAG-="uaccess", ENV{ID_SEAT}="omanywhere"
+EOF
+read -r -d '' modules_text <<'EOF' || true
+# omanywhere-host: vkms, the virtual DRM card a CPU-only desktop runs on.
+vkms
+EOF
+# %i, not %I: NAME has no characters systemd escapes, and %I would turn its
+# hyphens into slashes.
+read -r -d '' unit_text <<'EOF' || true
+[Unit]
+Description=vkms card for the container omanywhere-%i
+Documentation=https://github.com/cbyrd01/omanywhere/blob/main/docs/usage.md#setting-up-a-host
+Requires=sys-kernel-config.mount
+After=sys-kernel-config.mount systemd-modules-load.service systemd-udevd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/omanywhere-host vkms start %i
+ExecStop=/usr/local/bin/omanywhere-host vkms stop %i
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# docker_enabled: Docker starts on demand (its socket) or at boot.
+docker_enabled() {
+  systemctl -q is-enabled docker.socket 2>/dev/null || systemctl -q is-enabled docker.service 2>/dev/null
+}
+
+# modules_present: the running kernel's modules are installed. A pacman -Syu
+# that upgrades linux removes them until the host boots the new kernel, and
+# then modprobe (vkms, Docker's overlay and netfilter modules) fails.
+modules_present() {
+  [[ -d /usr/lib/modules/$(uname -r) ]]
+}
+
+# cdi_ready: NVIDIA's CDI spec has the device bin/omanywhere uses.
+cdi_ready() {
+  nvidia-ctk cdi list 2>/dev/null | grep -qx 'nvidia.com/gpu=all'
+}
+
+# install_text FILE TEXT: write TEXT and a newline to FILE, mode 0644.
+install_text() {
+  printf '%s\n' "$2" | install -Dm0644 /dev/stdin "$1"
+}
+
+# same_text FILE TEXT: FILE holds TEXT and a newline.
+same_text() {
+  [[ -f $1 ]] && cmp -s "$1" <(printf '%s\n' "$2")
+}
+
+cmd_setup() {
+  local vkms='' yes='' packages=() missing=() plan=() pkg gpu
+  local enable_docker='' self_copy='' new_rule='' new_modules='' new_unit='' load=''
+  while (($#)); do
+    case $1 in
+      --vkms) vkms=1 ;;
+      --yes) yes=1 ;;
+      *) usage ;;
+    esac
+    shift
+  done
+  [[ -f /etc/arch-release ]] || die "this host is not Arch Linux; omanywhere-host supports only Arch"
+  modules_present || die "the running kernel ($(uname -r)) has no modules in /usr/lib/modules, so a kernel upgrade replaced it: reboot, then run setup again"
+
+  # The GPU decides the rest. An NVIDIA GPU needs its driver first: setup
+  # doesn't pick or install one.
+  if nvidia_gpu && [[ -z $vkms ]]; then
+    gpu=nvidia
+    [[ -d /sys/module/nvidia_drm ]] ||
+      die "this host has an NVIDIA GPU but no NVIDIA driver loaded: install one (https://wiki.archlinux.org/title/NVIDIA), reboot, and run setup again. Or pass --vkms for CPU-only desktops"
+    [[ $(cat /sys/module/nvidia_drm/parameters/modeset 2>/dev/null) == Y ]] ||
+      die "nvidia_drm is loaded with modeset=N: the desktop needs modeset=1 (Arch's nvidia-utils sets it unless a modprobe.d file overrides it). Fix it, reboot, and run setup again"
+  elif other_gpu && [[ -z $vkms ]]; then
+    gpu=dri
+  else
+    gpu=vkms
+  fi
+
+  packages=(docker make)
+  [[ $gpu != nvidia ]] || packages+=(nvidia-container-toolkit)
+  for pkg in "${packages[@]}"; do
+    pacman -Q "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
+  done
+  # Arch doesn't support partial upgrades, so installing means -Syu.
+  ((${#missing[@]} == 0)) || plan+=("pacman -Syu --needed ${missing[*]} (a full system upgrade, as Arch requires)")
+  docker_enabled || { enable_docker=1 && plan+=("systemctl enable --now docker.socket"); }
+  cmp -s "$self" "$installed" 2>/dev/null || { self_copy=1 && plan+=("install $installed"); }
+  if [[ $gpu == nvidia ]]; then
+    cdi_ready || plan+=("make NVIDIA's CDI spec (systemctl restart nvidia-cdi-refresh)")
+  elif [[ $gpu == vkms ]]; then
+    same_text "$rule" "$rule_text" || { new_rule=1 && plan+=("install $rule and reload udev"); }
+    same_text "$modules" "$modules_text" || { new_modules=1 && plan+=("install $modules"); }
+    same_text "$unit" "$unit_text" || { new_unit=1 && plan+=("install $unit"); }
+    [[ -d /sys/module/vkms ]] || { load=1 && plan+=("modprobe vkms"); }
+  fi
+
+  case $gpu in
+    nvidia) say "GPU: NVIDIA, through its CDI spec (up NAME --gpu nvidia, or auto)" ;;
+    dri) say "GPU: AMD or Intel, which needs nothing more (up NAME --gpu dri, or auto)" ;;
+    vkms) say "no GPU in use: vkms, one card per container (omanywhere-host vkms add NAME, then up NAME --gpu vkms)" ;;
+  esac
+  if ((${#plan[@]} == 0)); then
+    say "nothing to change: this host is set up"
+    return
+  fi
+  say "setup will:"
+  printf '  - %s\n' "${plan[@]}" >&2
+  if [[ -z $yes ]]; then
+    [[ -t 0 ]] || die "no terminal to confirm on: pass --yes"
+    local answer
+    read -r -p "Go ahead? [y/N] " answer
+    [[ $answer == [yY]* ]] || die "nothing changed"
+  fi
+
+  if ((${#missing[@]})); then
+    pacman -Syu --needed --noconfirm "${missing[@]}"
+    modules_present || die "pacman upgraded the kernel, and the running one's modules are gone: reboot, then run setup again to finish"
+  fi
+  [[ -z $enable_docker ]] || systemctl enable --now docker.socket
+  [[ -z $self_copy ]] || install -Dm0755 "$self" "$installed"
+
+  if [[ $gpu == nvidia ]]; then
+    cdi_ready || systemctl restart nvidia-cdi-refresh.service
+    cdi_ready || die "NVIDIA's CDI spec still has no nvidia.com/gpu=all: see journalctl -u nvidia-cdi-refresh"
+  elif [[ $gpu == vkms ]]; then
+    # The rule goes in before vkms loads: a card made before it stays on the
+    # host's seat until the host reboots.
+    [[ -z $new_rule ]] || { install_text "$rule" "$rule_text" && udevadm control --reload; }
+    [[ -z $new_modules ]] || install_text "$modules" "$modules_text"
+    [[ -z $new_unit ]] || { install_text "$unit" "$unit_text" && systemctl daemon-reload; }
+    [[ -z $load ]] || modprobe vkms
+    [[ -d $configfs ]] ||
+      say "warning: this kernel's vkms has no configfs ($configfs), so vkms add can't make cards. vkms's one card serves one container: up NAME --gpu dri:/dev/dri/cardN"
+  fi
+  say "done. Docker's socket is root-equivalent: to run omanywhere as USER without sudo, add USER to the docker group (usermod -aG docker USER), knowing that it gives USER root on this host"
+}
+
+# --- vkms cards.
+
+# card_dir NAME: the configfs directory of NAME's card.
+card_dir() {
+  echo "$configfs/omanywhere-$1"
+}
+
+# card_node NAME: NAME's card's /dev/dri node, once the kernel has made it.
+card_node() {
+  local sys
+  for sys in "/sys/devices/faux/omanywhere-$1/drm/card"*; do
+    [[ -e $sys ]] || continue
+    echo "/dev/dri/${sys##*/}"
+    return 0
+  done
+  return 1
+}
+
+# card_enabled DIR: the configfs card DIR is enabled.
+card_enabled() {
+  [[ -f $1/enabled && $(<"$1/enabled") == 1 ]]
+}
+
+# vkms_start NAME: make and enable NAME's card (omanywhere-vkms@NAME's
+# ExecStart). One primary plane, CRTC, encoder and connector.
+vkms_start() {
+  local d
+  d=$(card_dir "$1")
+  [[ -d $configfs ]] || modprobe vkms
+  [[ -d $configfs ]] || die "vkms has no configfs ($configfs) in this kernel"
+  if card_enabled "$d"; then
+    say "the vkms card omanywhere-$1 is already enabled"
+    return
+  fi
+  mkdir -p "$d/planes/plane0" "$d/crtcs/crtc0" "$d/encoders/encoder0" "$d/connectors/connector0"
+  echo 1 >"$d/planes/plane0/type" # primary
+  [[ -e $d/planes/plane0/possible_crtcs/crtc0 ]] || ln -s "$d/crtcs/crtc0" "$d/planes/plane0/possible_crtcs/"
+  [[ -e $d/encoders/encoder0/possible_crtcs/crtc0 ]] || ln -s "$d/crtcs/crtc0" "$d/encoders/encoder0/possible_crtcs/"
+  [[ -e $d/connectors/connector0/possible_encoders/encoder0 ]] ||
+    ln -s "$d/encoders/encoder0" "$d/connectors/connector0/possible_encoders/"
+  echo 1 >"$d/enabled"
+  udevadm settle -t 10 || true
+  local node
+  node=$(card_node "$1") || die "the vkms card omanywhere-$1 is enabled, but the kernel made no DRM card for it"
+  say "the vkms card omanywhere-$1 is $node"
+}
+
+# vkms_stop NAME: disable and remove NAME's card (omanywhere-vkms@NAME's
+# ExecStop).
+vkms_stop() {
+  local d
+  d=$(card_dir "$1")
+  local part
+  [[ -d $d ]] || return 0
+  ! card_enabled "$d" || echo 0 >"$d/enabled"
+  rm -f "$d/planes/plane0/possible_crtcs/crtc0" "$d/encoders/encoder0/possible_crtcs/crtc0" \
+    "$d/connectors/connector0/possible_encoders/encoder0"
+  # A card that vkms_start left half made lacks some of these.
+  for part in planes/plane0 crtcs/crtc0 encoders/encoder0 connectors/connector0; do
+    [[ ! -d $d/$part ]] || rmdir "$d/$part"
+  done
+  rmdir "$d"
+}
+
+cmd_vkms() {
+  local action=${1:-} name=${2:-} node
+  (($# == 2)) || usage
+  check_name "$name"
+  need_root vkms "$action" "$name"
+  case $action in
+    add)
+      [[ -f $unit && -x $installed ]] || die "the host isn't set up for vkms cards: run setup first (on a host with a GPU: setup --vkms)"
+      systemctl enable --now "omanywhere-vkms@$name.service"
+      node=$(card_node "$name") || die "omanywhere-vkms@$name started, but its card has no DRM node: see journalctl -u omanywhere-vkms@$name"
+      say "the vkms card for omanywhere-$name is $node, made again at every boot. Next: omanywhere up $name --gpu vkms"
+      ;;
+    remove)
+      [[ $(docker container inspect -f '{{.State.Running}}' "omanywhere-$name" 2>/dev/null) != true ]] ||
+        die "omanywhere-$name is running on this card: omanywhere down $name first"
+      systemctl disable --now "omanywhere-vkms@$name.service" 2>/dev/null || true
+      vkms_stop "$name"
+      say "removed the vkms card for omanywhere-$name"
+      ;;
+    start) vkms_start "$name" ;;
+    stop) vkms_stop "$name" ;;
+    *) usage ;;
+  esac
+}
+
+case ${1:-} in
+  setup)
+    need_root "$@"
+    shift
+    cmd_setup "$@"
+    ;;
+  vkms)
+    shift
+    cmd_vkms "$@"
+    ;;
+  *) usage ;;
+esac

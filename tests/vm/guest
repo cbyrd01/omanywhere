@@ -1,7 +1,8 @@
 #!/bin/bash
 # Runs in the KVM guest (tests/vm/run): load the image under test into the
 # guest's Docker and run the guest legs, all in the guest's own kernel.
-# Output goes to /vm/out. /vm/legs says which legs run: desktop, gliff or both.
+# Output goes to /vm/out. /vm/legs says which legs run: desktop, gliff or both,
+# or one boot of the host leg.
 #   desktop 1. QEMU's bochs-display, a GPU no display server is DRM master of:
 #              the session refuses it (its master would blank a host's
 #              outputs).
@@ -12,6 +13,10 @@
 #              apart.
 #   gliff      tests/gliff.sh on vkms, after the GPU is unbound: bin/omanywhere
 #              up --gpu auto picks /dev/dri, and gliff encodes on the CPU.
+#   host-first, host-second
+#              tests/host.sh on this guest as the host, over two boots, and
+#              nothing else: bin/omanywhere-host setup and vkms cards, and up
+#              --gpu vkms (tests/vm/run boots the guest twice for it).
 set -euo pipefail
 
 out=/vm/out
@@ -60,6 +65,15 @@ for sys in /sys/class/drm/card*; do
   echo "$sys: $(readlink -f "$sys/device") $(basename "$(readlink -f "$sys/device/driver")")"
 done
 gpu=$(card bochs-drm)
+# The host leg: bin/omanywhere-host on this guest, over two boots
+# (tests/vm/run boots it again for the second).
+for phase in first second; do
+  if [[ $legs == *" host-$phase "* ]]; then
+    echo "=== omanywhere-host, $phase boot"
+    IMAGE="$image" OMANYWHERE_HOST_TEST=guest /repo/tests/host.sh "$phase"
+    exit 0
+  fi
+done
 if [[ $legs == *" desktop "* ]]; then
   leg "bochs-display, no DRM master: refused" desktop.sh OMANYWHERE_TEST_DEVICES="--device $gpu" \
     OMANYWHERE_TEST_EXPECT_SKIP="no display server holds DRM master on $gpu; refusing to take it"

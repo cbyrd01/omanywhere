@@ -8,7 +8,8 @@
 #
 # Arch Linux only: the same verified base as image/Containerfile (BASE_IMAGE,
 # from `make verify-base`), Arch's packages from Omarchy's stable mirror as
-# there: linux (the guest's kernel and its vkms module), docker, openssh
+# there: linux (the guest's kernel and its vkms module), docker, make (which
+# tests/host.sh expects omanywhere-host to find, as on a set-up host), openssh
 # (ssh-keygen for the test), qemu-base and e2fsprogs (to make and boot the
 # guest's disk).
 ARG BASE_IMAGE
@@ -20,7 +21,7 @@ RUN --mount=type=cache,target=/var/cache/pacman/pkg,sharing=locked \
     echo 'Server = https://stable-mirror.omarchy.org/$repo/os/$arch' >/etc/pacman.d/mirrorlist && \
     pacman-key --init && \
     pacman-key --populate archlinux && \
-    pacman -Syu --noconfirm --needed linux mkinitcpio docker openssh qemu-base e2fsprogs
+    pacman -Syu --noconfirm --needed linux mkinitcpio docker make openssh qemu-base e2fsprogs
 
 # A kernel and an initramfs to boot the guest with (no autodetect: the build
 # host's hardware is not the guest's).

@@ -6,7 +6,9 @@ holds one stock Omarchy desktop for one owner. You reach it with ssh, and you se
 
 ## Quick start
 
-On the host, you need Docker 29 or newer, `make`, and the image:
+On the host, you need Docker 29 or newer, `make`, and the image. On Arch,
+`sudo bin/omanywhere-host setup` installs what the host needs (see
+[Setting up a host](#setting-up-a-host)).
 
 ```sh
 make image                     # builds omanywhere:dev
@@ -55,7 +57,9 @@ NAME is 1 to 32 lower-case letters, digits and inner hyphens. From it come these
 Of the container, only the two volumes outlive `down`. Anything installed in its root, such as
 packages, is gone, and the next `up` makes the container afresh from the image. That is how to
 move to a new image: build it (or set `OMANYWHERE_IMAGE`), then run `down NAME` and `up NAME`.
-A container that exists keeps the image it was made from, because `up` only starts it.
+A container that exists keeps the image it was made from, because `up` only starts it. The
+one exception keeps the image too: a `--gpu vkms` container whose card has a new number is
+made again from the same image (see [Setting up a host](#setting-up-a-host)).
 
 ### `up` options
 
@@ -65,7 +69,7 @@ container, run `down NAME` and then `up NAME --option`.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--gpu auto\|none\|nvidia\|dri\|dri:/dev/dri/cardN` | `auto` | The DRM card the desktop runs on (see [CPU and GPU hosts](#cpu-and-gpu-hosts)). |
+| `--gpu auto\|none\|nvidia\|dri\|dri:/dev/dri/cardN\|vkms` | `auto` | The DRM card the desktop runs on (see [CPU and GPU hosts](#cpu-and-gpu-hosts)). |
 | `--key FILE` | your ssh agent's keys | The public keys that may log in. `up` copies them to the config directory. With no key and no `--password`, `up` refuses. |
 | `--github USER` | | Instead of `--key`: the public keys GitHub publishes for USER at `https://github.com/USER.keys`. Whoever holds that account can log in, so `up` shows the keys' fingerprints and asks first. Without a terminal, add `--yes`. |
 | `--listen ADDR` | `127.0.0.1` | The address ssh is published on, such as a tailnet address. |
@@ -300,6 +304,74 @@ still win, such as `gliff --server-bin 'gliff-server --low-bandwidth' omanywhere
 Over ssh, `HYPRLAND_INSTANCE_SIGNATURE` isn't set. `hyprctl` then needs `--instance 0`, for
 example `ssh omanywhere-NAME hyprctl --instance 0 monitors`. gliff-server doesn't need it.
 
+## Setting up a host
+
+On an Arch Linux host, `bin/omanywhere-host` does the root steps this page describes. Other
+distributions aren't supported. Run it from the checkout:
+
+```sh
+sudo bin/omanywhere-host setup
+```
+
+It lists what it will change and asks first (`--yes` skips the question), and run again it
+changes nothing that is already in place. It installs Docker and `make` from Arch's repositories
+and enables `docker.socket`. Installing a package means `pacman -Syu`, a full upgrade, because
+Arch doesn't support partial ones. Then it sets up the host's GPU:
+
+- **NVIDIA:** `nvidia-container-toolkit` and its CDI spec. It doesn't install the driver: install
+  [Arch's NVIDIA driver](https://wiki.archlinux.org/title/NVIDIA) and reboot first, or setup
+  stops and says so.
+- **AMD or Intel:** nothing more. `up NAME` uses the card.
+- **No GPU** (a CPU-only host or VM, whose virtual display adapter doesn't count), or with
+  `--vkms`: the vkms module, loaded at every boot, the udev rule that keeps vkms cards off the
+  host's seat, and `omanywhere-vkms@.service`, which makes each container's vkms card.
+
+It adds no one to the `docker` group. Membership is root-equivalent, so it's your decision:
+`sudo usermod -aG docker USER`, then log in again. Or run `omanywhere` with sudo, which keeps
+root's own config in `/root/.config/omanywhere`.
+
+On a vkms host, give each container its own card, then make the container on it:
+
+```sh
+sudo bin/omanywhere-host vkms add desk   # the card omanywhere-desk, made again at every boot
+bin/omanywhere up desk --gpu vkms
+```
+
+`--gpu vkms` finds the container's card by its name. Card numbers can change from one boot to
+the next, and a container's devices are fixed when it's made, so when the card's number has
+moved, `up` makes the container again from the same image, on the new card, keeping its
+volumes, keys, password and settings. As with `down` and `up`, anything installed in the
+container's root, outside the volumes, is gone. After `down desk`, remove the card with
+`sudo bin/omanywhere-host vkms remove desk`.
+
+setup installs only its own files: `/usr/local/bin/omanywhere-host` (the copy the boot unit
+runs), `/etc/systemd/system/omanywhere-vkms@.service`,
+`/etc/udev/rules.d/72-omanywhere-vkms.rules` and `/etc/modules-load.d/omanywhere-vkms.conf`.
+
+### A new cloud host
+
+[`host/cloud-init.yaml`](../host/cloud-init.yaml) is user data for a host made from
+[Arch Linux's official cloud image](https://gitlab.archlinux.org/archlinux/arch-boxes). Set
+`GITHUB_USER` in it, and if you like `NAME` and `OMANYWHERE_REF` (a commit pins exactly what
+runs as root on the host). On its first boot, `omanywhere-firstboot.service` clones omanywhere,
+runs `omanywhere-host setup --yes`, adds the image's user `arch` to the `docker` group (`arch`
+already has passwordless sudo there, so this gives it nothing new), makes a vkms card if the
+host has no GPU, builds the image, and runs `up NAME --github GITHUB_USER --yes` as `arch`.
+If installing git upgraded the kernel, it reboots into the new one first and goes on from
+there. The build takes about 30 GB of disk and half an hour or more. Follow it with
+`journalctl -u omanywhere-firstboot -f`.
+
+The desktop listens on the host's `127.0.0.1`, so connect through the host's own sshd. Print the
+container's block from your machine:
+
+```sh
+ssh arch@HOST /opt/omanywhere/bin/omanywhere ssh-config desk
+```
+
+Add it to `~/.ssh/config` on your machine with a `ProxyJump arch@HOST` line, then run
+`gliff --headless omanywhere-desk`. A host with an NVIDIA GPU needs its driver first, which the
+file doesn't install.
+
 ## CPU and GPU hosts
 
 The desktop needs a DRM card node. Hyprland's aquamarine allocates its buffers through one,
@@ -312,8 +384,8 @@ even when no screen is attached. `--gpu` chooses the card:
   3. no device otherwise. The desktop is then skipped, and `up` says why.
 - `nvidia` uses `--device nvidia.com/gpu=all`. `nvidia_drm` must be loaded with `modeset=1`, so
   the card has a `/dev/dri/card*` node. Docker 28.3 and newer reads CDI specs by default, so
-  you don't need `--runtime=nvidia`. On Arch, set the host up once (other distributions are
-  untested):
+  you don't need `--runtime=nvidia`. On Arch, `omanywhere-host setup` sets the host up, or by
+  hand (other distributions are untested):
 
   ```sh
   sudo pacman -S --needed nvidia-container-toolkit
@@ -331,54 +403,31 @@ even when no screen is attached. `--gpu` chooses the card:
 - `dri:/dev/dri/cardN` passes that one card, and its own render node if it has one (`up` finds
   it in the host's `/sys/class/drm/cardN/device/drm/`). `up` checks that the card exists when
   it makes the container.
+- `vkms` passes the vkms card `omanywhere-NAME` that `omanywhere-host vkms add NAME` made,
+  found by name ([Setting up a host](#setting-up-a-host)).
 - `none` uses no device. You get ssh and no desktop.
 
 **GPU host.** The desktop runs on the GPU's card, but none of the GPU's connectors belong to
 the container. They are the host's displays, so the session turns every one of them off and
 draws on a headless output instead. Rendering and encoding run on the GPU.
 
-**CPU-only host.** The host must provide a virtual card: `modprobe vkms`, kept across boots
-with a file in `/etc/modules-load.d/`. vkms's connector is the desktop's monitor. Each
-container needs a vkms card of its own, because the desktop must be the card's DRM master and a
-card has only one. Give each container its card with `--gpu dri:/dev/dri/cardN`, since
-`--gpu dri` passes every card. Hyprland renders with llvmpipe and gliff encodes with OpenH264,
-which costs about 2.5 to 3.5 cores for an active 1080p session and almost nothing when the
-screen is still.
+**CPU-only host.** The host must provide a virtual card, from the vkms module. vkms's
+connector is the desktop's monitor. Each container needs a vkms card of its own, because the
+desktop must be the card's DRM master and a card has only one. Hyprland renders with llvmpipe
+and gliff encodes with OpenH264, which costs about 2.5 to 3.5 cores for an active 1080p session
+and almost nothing when the screen is still.
+
+`omanywhere-host` sets this up ([Setting up a host](#setting-up-a-host)): it loads vkms at
+boot, and `vkms add NAME` makes a card per container through vkms's configfs
+(`/sys/kernel/config/vkms/omanywhere-NAME`), which `--gpu vkms` then finds by name. A kernel
+whose vkms has no configfs gives only the one card `modprobe vkms` makes, for one container:
+`--gpu dri:/dev/dri/cardN`, since `--gpu dri` passes every card.
 
 On a host with a desktop of its own, that desktop takes every new card on its seat as a
-monitor and becomes its DRM master, and the container's session then refuses the card. Before
-loading vkms, add this udev rule as `/etc/udev/rules.d/72-omanywhere-vkms.rules` and run
-`sudo udevadm control --reload`, so vkms cards stay off the host's seat:
-
-```
-# vkms cards are for containers' desktops: keep them off the host's seat.
-SUBSYSTEM=="drm", KERNEL=="card[0-9]*", DRIVERS=="vkms|faux_driver", TAG-="seat", TAG-="master-of-seat", TAG-="uaccess", ENV{ID_SEAT}="omanywhere"
-```
-
-A card made before the rule stays on the seat until vkms is unloaded or the host reboots.
-
-`modprobe vkms` makes one card. Where vkms has configfs (`/sys/kernel/config/vkms` exists),
-make one more per container, named for it (here `desk`), in a root shell (`sudo -i`):
-
-```sh
-d=/sys/kernel/config/vkms/omanywhere-desk
-mkdir $d $d/planes/plane0 $d/crtcs/crtc0 $d/encoders/encoder0 $d/connectors/connector0
-echo 1 >$d/planes/plane0/type   # primary
-ln -s $d/crtcs/crtc0 $d/planes/plane0/possible_crtcs/
-ln -s $d/crtcs/crtc0 $d/encoders/encoder0/possible_crtcs/
-ln -s $d/encoders/encoder0 $d/connectors/connector0/possible_encoders/
-echo 1 >$d/enabled
-ls /sys/devices/faux/omanywhere-desk/drm/   # its cardN
-```
-
-configfs cards don't survive a reboot. To remove one sooner, after `down NAME`:
-
-```sh
-echo 0 >$d/enabled
-rm $d/planes/plane0/possible_crtcs/crtc0 $d/encoders/encoder0/possible_crtcs/crtc0 \
-  $d/connectors/connector0/possible_encoders/encoder0
-rmdir $d/planes/plane0 $d/crtcs/crtc0 $d/encoders/encoder0 $d/connectors/connector0 $d
-```
+monitor and becomes its DRM master, and the container's session then refuses the card. So
+setup installs a udev rule, `/etc/udev/rules.d/72-omanywhere-vkms.rules`, that keeps vkms cards
+off the host's seat, before it loads vkms. A card made before the rule stays on the seat until
+vkms is unloaded or the host reboots.
 
 ## DRM master
 
@@ -420,8 +469,8 @@ Start with `omanywhere status NAME`.
 - **`desktop skipped: no display server holds DRM master ...`.** See [DRM master](#drm-master).
   On a desktop host, log in to the host's desktop, then `docker restart omanywhere-NAME`.
 - **`no usable DRM card: ... (vkms: held by another process ...)`.** See
-  [DRM master](#drm-master), then give the container a new card: `down NAME`, then
-  `up NAME --gpu dri:/dev/dri/cardN`.
+  [DRM master](#drm-master), then give the container a card of its own: `down NAME`,
+  `sudo bin/omanywhere-host vkms add NAME`, then `up NAME --gpu vkms`.
 - **A manual lock (the keybinding or the menu) can't be unlocked.** With no password there is
   nothing to unlock it with. The owner script turns the idle lock off (`idle.lock` is `0` in the
   owner's `~/.config/omarchy/shell.json`), but a manual lock still works. Run

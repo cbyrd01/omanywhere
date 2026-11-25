@@ -18,7 +18,9 @@ prebuilt image, so you build it yourself.
 ## Requirements
 
 - A Linux host with Docker 29 or newer and `make`. The build needs about 30 GB of free disk,
-  and the image is about 12 GB.
+  and the image is about 12 GB. On Arch, `sudo bin/omanywhere-host setup` prepares the host,
+  and [`host/cloud-init.yaml`](host/cloud-init.yaml) does it all on a new cloud host (see
+  [Setting up a host](docs/usage.md#setting-up-a-host)).
 - A DRM card for the desktop: a GPU (NVIDIA through CDI, AMD or Intel), or, on a host with no
   GPU, a `vkms` card that the host loads. See
   [CPU and GPU hosts](docs/usage.md#cpu-and-gpu-hosts).

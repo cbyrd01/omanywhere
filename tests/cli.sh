@@ -71,7 +71,7 @@ fails "not a valid name" up 'Bad_Name' --key "$tmp/id_ed25519.pub"
 fails "not a valid name" up '../x' --key "$tmp/id_ed25519.pub"
 fails "not a valid name" up "$(printf 'a%.0s' {1..40})" --key "$tmp/id_ed25519.pub"
 fails "--gpu" up "$name" --gpu sometimes --key "$tmp/id_ed25519.pub"
-for bad in dri: dri:card1 dri:/dev/dri/card dri:/dev/dri/renderD128 dri:/dev/dri/card1x dri:/dev/dri/../dri/card1 'dri:/dev/dri/card1 '; do
+for bad in vkms: vkms:desk dri: dri:card1 dri:/dev/dri/card dri:/dev/dri/renderD128 dri:/dev/dri/card1x dri:/dev/dri/../dri/card1 'dri:/dev/dri/card1 '; do
   fails "--gpu" up "$name" --gpu "$bad" --key "$tmp/id_ed25519.pub"
 done
 fails "--drm-master" up "$name" --drm-master yes --key "$tmp/id_ed25519.pub"
@@ -148,6 +148,8 @@ for card in card0:vkms card1:amdgpu:renderD128 card2:nvidia:renderD129; do
     ln -s /dev/null "$fake/dri/$render"
   }
 done
+# card0 is also the configfs vkms card of the container omanywhere-desk.
+mkdir -p "$fake/faux/omanywhere-desk/drm/card0"
 # built MODE CDI: gpu_args MODE's device arguments, then what it said, with
 # Docker seeming to have NVIDIA's CDI device when CDI is yes. In a child
 # bash, so the CLI's names (name, config, ...) stay apart from the test's.
@@ -155,7 +157,7 @@ built() {
   # shellcheck disable=SC2016 # the script expands its own variables
   bash -c '
     source "$1"
-    dev_dri=$2/dri drm_class=$2/class/drm cdi=$3
+    dev_dri=$2/dri drm_class=$2/class/drm faux=$2/faux cdi=$3 name=desk container=omanywhere-desk
     cdi_gpu() { [[ $cdi == yes ]]; }
     gpu_args "$4"
     echo "devices: ${devices[*]}"' bash "$cli" "$fake" "$2" "$1" 2>&1 | sed '/^devices:/!s/^/said: /'
@@ -177,9 +179,14 @@ expect_built none no "devices: "
 out=$(built dri:/dev/dri/card9 no) || true
 [[ $out == *"--gpu dri:/dev/dri/card9: this host has no character device /dev/dri/card9"* && $out != *devices:* ]] ||
   fail "--gpu dri:/dev/dri/card9, a card the host lacks, was not refused: $out"
+expect_built vkms no "devices: --device /dev/dri/card0"
 rm "$fake/dri/card2"
 expect_built dri no "devices: --device /dev/dri"
-pass "--gpu: dri:/dev/dri/cardN passes that card and its own render node; NVIDIA without CDI warns once; a missing card is refused"
+rm -r "$fake/faux/omanywhere-desk"
+out=$(built vkms no) || true
+[[ $out == *"--gpu vkms: this host has no vkms card for omanywhere-desk: run sudo omanywhere-host vkms add desk"* && $out != *devices:* ]] ||
+  fail "--gpu vkms with no vkms card for the container was not refused: $out"
+pass "--gpu: dri:/dev/dri/cardN passes that card and its own render node; vkms the container's own vkms card; NVIDIA without CDI warns once; a missing card is refused"
 # The form is kept in the settings like the others.
 # shellcheck disable=SC2016 # the script expands its own variables
 out=$(bash -c '

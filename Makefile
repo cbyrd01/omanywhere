@@ -6,7 +6,7 @@ TOOLS = docker run --rm --network none -v "$(CURDIR):$(CURDIR):ro" \
 	-v "$(GIT_COMMON_DIR):$(GIT_COMMON_DIR):ro" -w "$(CURDIR)" $(TOOLS_IMAGE)
 
 .PHONY: lint tools shellcheck secrets secrets-staged hooks verify-base image test test-boot test-owner \
-	test-session-logic test-cli test-desktop test-desktop-vm test-gliff test-gliff-vm
+	test-session-logic test-cli test-desktop test-desktop-vm test-gliff test-gliff-vm test-host-vm
 
 lint: shellcheck secrets
 
@@ -74,3 +74,8 @@ test-gliff: image
 # tests/gliff.sh in the KVM guest, on vkms: the CPU-only leg.
 test-gliff-vm: image
 	OMANYWHERE_VM_LEGS=gliff IMAGE=$(IMAGE) BASE_IMAGE=$(BASE_IMAGE) tests/vm/run
+
+# bin/omanywhere-host and up --gpu vkms (tests/host.sh) in the KVM guest, as its
+# host, over two boots of a throwaway overlay of the guest's disk.
+test-host-vm: image
+	OMANYWHERE_VM_LEGS=host IMAGE=$(IMAGE) BASE_IMAGE=$(BASE_IMAGE) tests/vm/run
