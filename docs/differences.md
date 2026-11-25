@@ -78,7 +78,7 @@ Changed or added:
 | Change | From | Why |
 |---|---|---|
 | polkit gets `SystemCallFilter=~capset` | Arch | **Workaround** for systemd#34565: a unit with `User=` and a syscall filter fails without `CAP_SYS_ADMIN`, so polkit wouldn't start. The line only tightens polkit's filter. |
-| journald forwards warnings and errors to the console (`ForwardToConsole=yes`, `MaxLevelConsole=warning`) | Arch | The console is `docker logs`, so failures show there without the desktop's info noise. |
+| journald forwards warnings and errors to the console (`ForwardToConsole=yes`, `MaxLevelConsole=warning`) | Arch | The console is `docker logs`, so failures show there without the desktop's info noise. The session unit logs at warning, and the owner script marks its warnings and failures, so theirs show too. |
 | sshd requires and starts after `omanywhere-owner` | Arch | ssh starts once the owner exists. |
 | `sshdgenkeys` makes one ed25519 key in `/var/lib/omanywhere/ssh` | Arch | The host key lives in the state volume. |
 | `omanywhere-owner.service` | new | Makes the owner account each boot (see [Accounts](#accounts-sudo-and-polkit)). |
@@ -118,7 +118,7 @@ Changed or added:
 | `AQ_DRM_DEVICES` names that card. `LIBGL_ALWAYS_SOFTWARE=1` when no render node is usable | Omarchy | Hyprland would open every card. Mesa needs a render node for GPU GL. |
 | `LIBSEAT_BACKEND=noop` | Omarchy | **Workaround.** With no udev in the container, logind's `TakeDevice` answers `ENODEV`. |
 | `HYPRLAND_CONFIG` points at `/usr/share/omanywhere/hypr/hyprland.lua`, which loads the owner's `~/.config/hypr/hyprland.lua` and then the container's rules | Omarchy | The owner's and Omarchy's files stay unedited. |
-| On a GPU, the container's rules turn off every connector of the card and draw on a headless output | Omarchy | Those connectors are the host's monitors. |
+| On a GPU, the container's rules turn off every connector of the card and draw on a headless output. They read the card's connectors from sysfs at each config load. A `monitor.added` handler turns off an output that appears later, matched by connector type and number, after its first modeset | Omarchy | Those connectors are the host's monitors. A reload clears Hyprland's rules, so the connectors are read again. |
 | With no password, `.idle.lock` is set to `0` in the owner's `~/.config/omarchy/shell.json` at each boot, and logged when it changes. A marker, `~/.local/state/omanywhere/idle-lock-off`, records it, so a later boot with a password deletes the line again (unless the owner changed it) | Omarchy | Omarchy's shell locks the screen after `idle.lock` seconds (300 by default), and with no password nothing can unlock it. The owner may change the value back. The screensaver and the file's other settings are unchanged, and the file is left alone when there is a password. |
 | No udev, input devices or `uinput`, which a container doesn't get | Omarchy | gliff sends input through Wayland. |
 

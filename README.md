@@ -38,7 +38,10 @@ gliff --headless omanywhere-desk
 
 `up` publishes ssh on `127.0.0.1` only. The keys that may log in come from your ssh agent,
 `--key FILE` or `--github USER`. By default the owner has no password: sudo and polkit don't
-ask for one, and the idle lock is off. `up --password` gives the owner one.
+ask for one, and the idle lock is off. `up --password` gives the owner one. The owner's home and
+the container's identity live in two Docker volumes; `up --data DIR` keeps them in a directory
+instead, where the host's backups reach them. `docker logs omanywhere-desk` shows the boot and
+the container's warnings and errors, as `up` gives systemd a console.
 [docs/usage.md](docs/usage.md) covers every command and flag, access from other machines, and
 troubleshooting.
 

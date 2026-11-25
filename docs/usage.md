@@ -52,6 +52,10 @@ NAME is 1 to 32 lower-case letters, digits and inner hyphens. From it come these
 - the config directory `~/.config/omanywhere/NAME` (mode 0700). Set `OMANYWHERE_CONFIG_DIR`
   to use another parent directory.
 
+If Docker can't remove a volume, such as one another container uses, `down --purge` removes
+what it can, names that volume, and keeps the config directory, which holds its password, if it
+has one. The files of volumes made with `--data` stay in their directory either way.
+
 `OMANYWHERE_IMAGE` picks the image. The default is `omanywhere:dev`. `up` never pulls an image.
 
 Of the container, only the two volumes outlive `down`. Anything installed in its root, such as
@@ -150,7 +154,8 @@ The image has a Docker `HEALTHCHECK` (`/usr/lib/omanywhere/health`), so `docker 
 each container as `healthy`, `starting` or `unhealthy`, and `status` has a `health` line. A
 container is healthy when:
 
-- systemd is `running`, not `degraded` (a unit failed) or still starting;
+- systemd is `running`, not `degraded` (a unit failed; the check names the failed units) or
+  still starting;
 - sshd is active;
 - the desktop session is running. A container with no card (`--gpu none`) has no desktop and
   passes without one.
@@ -160,9 +165,6 @@ was refused, makes the container unhealthy. The `desktop` line in `status` says 
 checks every 5 s while the container boots (for up to 4 minutes), then every 30 s, and a
 container turns unhealthy after 3 failures in a row. `docker inspect omanywhere-NAME` keeps the
 last checks' output under `State.Health`. Health is only reported: Docker doesn't restart an unhealthy container.
-
-`down --purge` stops if Docker can't remove a volume, such as one another container uses. It
-names the volume and keeps the config directory, which holds that volume's password, if it has one.
 
 ### No restart policy
 
@@ -224,8 +226,8 @@ console output to `/dev/null`. With one, `docker logs omanywhere-NAME` shows:
 
 - the boot;
 - the desktop session's lines, including why it was skipped or refused;
-- the journal's warnings and errors, from any unit. The rest of the journal stays in the
-  container: `docker exec omanywhere-NAME journalctl`;
+- the journal's warnings and errors, from any unit, such as the owner unit's failures. The rest
+  of the journal stays in the container: `docker exec omanywhere-NAME journalctl`;
 - the console's login prompt (`omanywhere-NAME login:`), from Omarchy's stock getty. Root's
   password is locked, and `docker attach` is already root-equivalent, so the prompt opens
   nothing. It's only noise in the logs.
@@ -437,7 +439,8 @@ even when no screen is attached. `--gpu` chooses the card:
   re-run it when the driver changes.
 - `dri` uses `--device /dev/dri`, which covers AMD and Intel GPUs and a host vkms card. It
   doesn't cover NVIDIA: Hyprland allocates through GBM, and NVIDIA's GBM backend comes only with
-  its CDI spec, so the session skips an NVIDIA card given this way, and `up` warns. A Debian or
+  its CDI spec, so the session skips an NVIDIA card given this way, and `up` warns and names
+  `--gpu nvidia`. A Debian or
   Ubuntu host's CDI spec puts the backend where Arch's Mesa doesn't look, so it isn't supported
   yet.
 - `dri:/dev/dri/cardN` passes that one card, and its own render node if it has one (`up` finds
@@ -449,7 +452,10 @@ even when no screen is attached. `--gpu` chooses the card:
 
 **GPU host.** The desktop runs on the GPU's card, but none of the GPU's connectors belong to
 the container. They are the host's displays, so the session turns every one of them off and
-draws on a headless output instead. Rendering and encoding run on the GPU.
+draws on a headless output instead. Rendering and encoding run on the GPU. A connector that
+appears while the desktop runs, such as a newly plugged display or a DisplayPort MST stream,
+is turned off as it appears, after Hyprland's first modeset, so it can light for a moment
+first.
 
 **CPU-only host.** The host must provide a virtual card, from the vkms module. vkms's
 connector is the desktop's monitor. Each container needs a vkms card of its own, because the
@@ -500,7 +506,8 @@ that a host display shares. The real fix is upstream: a compositor that needs no
 
 ## Troubleshooting
 
-Start with `omanywhere status NAME`.
+Start with `omanywhere status NAME`, then `docker logs omanywhere-NAME`, which has the boot and
+the journal's warnings and errors (see [`--tty` and `docker logs`](#--tty-and-docker-logs)).
 
 - **`desktop skipped: no DRM card ...`** or **`no usable DRM card ...`.** The container has no
   card the desktop can use, and its devices are fixed when it's made. Load vkms on a CPU-only
@@ -519,9 +526,10 @@ Start with `omanywhere status NAME`.
   (`down NAME`, then `up NAME --password`), and the lock takes it. A boot with a password over
   the same home removes the `idle.lock` line that the owner script set (Omarchy's default of
   300 applies again), unless you changed it yourself.
-- **`health unhealthy: ...`.** The check's message names what is down: systemd degraded (run
-  `docker exec omanywhere-NAME systemctl --failed`), sshd, or the desktop, which the
-  `desktop` line explains. See [Health](#health).
+- **`health unhealthy: ...`.** The check's message names what is down: systemd degraded, with
+  the failed units (`docker exec omanywhere-NAME journalctl -b -u UNIT` says why), systemd in
+  another state (`docker exec omanywhere-NAME systemctl status`), sshd, or the desktop, which
+  the `desktop` line explains. See [Health](#health).
 - **`owner failed`.** Run `docker exec omanywhere-NAME journalctl -b -u omanywhere-owner`.
   Usually a key line isn't a key.
 - **The desktop restarts, or is `failed`.** Run `docker exec omanywhere-NAME journalctl -b -u
