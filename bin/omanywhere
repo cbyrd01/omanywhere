@@ -2,7 +2,7 @@
 # omanywhere: run stock Omarchy as a container desktop, reached with gliff over
 # ssh. See docs/usage.md.
 #
-#   omanywhere up NAME [--gpu auto|none|nvidia|dri|dri:/dev/dri/cardN]
+#   omanywhere up NAME [--gpu auto|none|nvidia|dri|dri:/dev/dri/cardN|vkms]
 #                      [--key FILE | --github USER [--yes]] [--listen ADDR]
 #                      [--drm-master allow] [--password | --no-password]
 #   omanywhere down NAME [--purge [--yes]]
@@ -25,6 +25,8 @@ user=omarchy
 # point them at a made-up tree).
 dev_dri=/dev/dri
 drm_class=/sys/class/drm
+# Where the kernel puts configfs vkms cards (omanywhere-host vkms add NAME).
+faux=/sys/devices/faux
 
 # The run flags, shared with the tests; docs/usage.md ("The run flags") says
 # what each is for. Found beside this script, through any symlink to it.
@@ -33,7 +35,7 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/run-flags.bash"
 
 usage() {
   cat >&2 <<'EOF'
-usage: omanywhere up NAME [--gpu auto|none|nvidia|dri|dri:/dev/dri/cardN]
+usage: omanywhere up NAME [--gpu auto|none|nvidia|dri|dri:/dev/dri/cardN|vkms]
                      [--key FILE | --github USER [--yes]] [--listen ADDR] [--drm-master allow]
                      [--password | --no-password]
        omanywhere down NAME [--purge [--yes]]
@@ -78,8 +80,8 @@ check() {
   case $1 in
     # That the card exists is checked when the container is made (gpu_args),
     # so status and ssh-config still work once it has gone.
-    gpu) [[ $2 =~ ^(auto|none|nvidia|dri|dri:/dev/dri/card[0-9]+)$ ]] ||
-      die "$3 '$2': takes auto, none, nvidia, dri or dri:/dev/dri/cardN" ;;
+    gpu) [[ $2 =~ ^(auto|none|nvidia|dri|dri:/dev/dri/card[0-9]+|vkms)$ ]] ||
+      die "$3 '$2': takes auto, none, nvidia, dri, dri:/dev/dri/cardN or vkms" ;;
     # An IPv4 or IPv6 address, as docker run -p takes it.
     listen) [[ $2 =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ || ($2 =~ ^[0-9A-Fa-f:.]+$ && $2 == *:*) ]] ||
       die "$3 '$2': takes an IPv4 or IPv6 address, such as 127.0.0.1 or a tailnet address" ;;
@@ -150,6 +152,36 @@ card_render() {
   done
 }
 
+# vkms_card: the host's DRM card (cardN) for this container's vkms card,
+# omanywhere-NAME; fails if there is none.
+vkms_card() {
+  local sys
+  for sys in "$faux/$container/drm/card"*; do
+    [[ $sys =~ /card[0-9]+$ && -c $dev_dri/${sys##*/} ]] || continue
+    echo "${sys##*/}"
+    return 0
+  done
+  return 1
+}
+
+# remake_if_card_moved: for an existing --gpu vkms container. Its devices are
+# fixed when it's made, but its card's number can change at a reboot, when the
+# host makes the cards again. If it has, cmd_up makes it again (state=absent,
+# remake=1) from the same image, with the same volumes, keys, password and
+# saved settings, removing the old one only once every check has passed.
+remake_if_card_moved() {
+  local card info made_from mounted devs
+  card=$(vkms_card) || die "this host has no vkms card for $container: run sudo omanywhere-host vkms add $name"
+  info=$(docker container inspect -f '{{.Image}}{{"\n"}}{{range .Mounts}}{{if eq .Destination "/run/secrets/password"}}y{{end}}{{end}}{{"\n"}}{{range .HostConfig.Devices}}{{.PathOnHost}} {{end}}' "$container") ||
+    die "could not inspect $container"
+  { read -r made_from; read -r mounted; read -r devs; } <<<"$info"
+  [[ " $devs" != *" /dev/dri/$card "* ]] || return 0
+  [[ -z $mounted ]] || has_password ||
+    die "$container was made with a password, and $config/password is gone or blank: write it back, or omanywhere down $name, then up"
+  say "$container's vkms card is now /dev/dri/$card, not ${devs% }: making it again from the same image, with the same volumes and settings"
+  image=$made_from state=absent remake=1 opt_gpu='' opt_listen='' opt_master='' opt_password=''
+}
+
 # warn_nvidia CARD...: one warning if any of the host's cards (cardN) is
 # NVIDIA's and Docker has no NVIDIA CDI device. The desktop session can't use
 # such a card: NVIDIA's GBM backend, which Hyprland allocates through, comes
@@ -195,6 +227,13 @@ gpu_args() {
       render=$(card_render "$card")
       devices=(--device "/dev/dri/$card" ${render:+--device "$render"})
       gpu_note="/dev/dri/$card${render:+ and its render node $render}"
+      ;;
+    # The container's own vkms card, found by its name, since its number can
+    # change from one boot to the next (omanywhere-host vkms add NAME).
+    vkms)
+      card=$(vkms_card) || die "--gpu vkms: this host has no vkms card for $container: run sudo omanywhere-host vkms add $name (docs/usage.md, Setting up a host)"
+      devices=(--device "/dev/dri/$card")
+      gpu_note="its vkms card omanywhere-$name (/dev/dri/$card)"
       ;;
     auto)
       if cdi_gpu; then
@@ -399,7 +438,7 @@ endpoint() {
 # --- Commands.
 
 cmd_up() {
-  local keyfile='' github='' yes='' opt_gpu='' opt_listen='' opt_master='' opt_password='' state keys password=''
+  local keyfile='' github='' yes='' opt_gpu='' opt_listen='' opt_master='' opt_password='' state keys password='' remake=''
   set_name "${1:-}"
   shift
   while (($#)); do
@@ -462,6 +501,7 @@ cmd_up() {
 
   # Everything is checked before anything is made: the device, then the keys.
   load_settings || true
+  [[ $state == absent || $gpu != vkms ]] || remake_if_card_moved
   if [[ $state == absent ]]; then
     gpu=${opt_gpu:-${gpu:-auto}}
     listen=${opt_listen:-${listen:-127.0.0.1}}
@@ -499,6 +539,7 @@ cmd_up() {
     docker start "$container" >/dev/null ||
       die "could not start $container; if another program has taken its ssh port, $(endpoint), free it and run up again"
   else
+    [[ -z $remake ]] || docker rm "$container" >/dev/null || die "could not remove $container to make it again"
     say "making $container from $image: $gpu_note"
     local env=() bind out
     [[ -z $drm_master ]] || env+=(-e OMANYWHERE_DRM_MASTER=allow)

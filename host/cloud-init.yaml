@@ -1,0 +1,85 @@
+#cloud-config
+# omanywhere on a new host made from Arch Linux's official cloud image
+# (https://gitlab.archlinux.org/archlinux/arch-boxes), as its user data. Set
+# the values in /etc/omanywhere/cloud-init.env below first.
+#
+# On first boot omanywhere-firstboot.service installs git, clones omanywhere
+# at OMANYWHERE_REF, runs bin/omanywhere-host setup, adds the image's user
+# (arch) to the docker group, builds the image (about 30 GB of disk and half
+# an hour or more) and starts the desktop NAME with GITHUB_USER's ssh keys.
+# When the upgrade that installing git takes replaces the kernel, it reboots
+# into the new one and goes on from there. Follow it with
+# journalctl -u omanywhere-firstboot -f.
+#
+# The desktop listens on 127.0.0.1 only. Reach it through this host's own
+# sshd: see docs/usage.md, "Setting up a host".
+#
+# A host with an NVIDIA GPU needs its driver first, which this file doesn't
+# install: see docs/usage.md.
+write_files:
+  - path: /etc/omanywhere/cloud-init.env
+    permissions: "0644"
+    content: |
+      # The GitHub account whose public keys may log in to the desktop.
+      GITHUB_USER=
+      # The desktop's name: the container is omanywhere-NAME.
+      NAME=desk
+      # The omanywhere commit, tag or branch to build. A commit pins exactly
+      # what runs as root here.
+      OMANYWHERE_REF=main
+  - path: /usr/local/lib/omanywhere-firstboot
+    permissions: "0755"
+    content: |
+      #!/bin/bash
+      set -euo pipefail
+      . /etc/omanywhere/cloud-init.env
+      [[ -n $GITHUB_USER ]] || { echo "omanywhere: set GITHUB_USER in the user data" >&2; exit 1; }
+      # As arch, with arch's own HOME, so omanywhere keeps its config in
+      # ~arch/.config/omanywhere.
+      as_arch() {
+        runuser -u arch -- env -u XDG_CONFIG_HOME HOME=/home/arch "$@"
+      }
+      if [[ ! -d /opt/omanywhere/.git ]]; then
+        pacman -Syu --noconfirm --needed git
+        install -d -o arch -g arch /opt/omanywhere
+        as_arch git clone -q https://github.com/cbyrd01/omanywhere /opt/omanywhere
+        as_arch git -C /opt/omanywhere checkout -q "$OMANYWHERE_REF"
+      fi
+      # The upgrade replaced the kernel: its modules (vkms, Docker's) are
+      # gone until the host boots the new one. This unit runs again then.
+      if [[ ! -d /usr/lib/modules/$(uname -r) ]]; then
+        echo "omanywhere: rebooting into the upgraded kernel"
+        systemctl reboot
+        exit 0
+      fi
+      /opt/omanywhere/bin/omanywhere-host setup --yes
+      # arch already has passwordless sudo in this image, so the docker
+      # group, root-equivalent, gives it nothing new.
+      usermod -aG docker arch
+      gpu=auto
+      if [[ -f /etc/systemd/system/omanywhere-vkms@.service ]]; then
+        /opt/omanywhere/bin/omanywhere-host vkms add "$NAME"
+        gpu=vkms
+      fi
+      as_arch make -C /opt/omanywhere image
+      as_arch /opt/omanywhere/bin/omanywhere up "$NAME" --gpu "$gpu" --github "$GITHUB_USER" --yes
+      touch /var/lib/omanywhere-firstboot.done
+  - path: /etc/systemd/system/omanywhere-firstboot.service
+    permissions: "0644"
+    content: |
+      [Unit]
+      Description=omanywhere's first boot: host setup, the image and one desktop
+      Wants=network-online.target
+      After=network-online.target
+      ConditionPathExists=!/var/lib/omanywhere-firstboot.done
+
+      [Service]
+      Type=oneshot
+      TimeoutStartSec=infinity
+      ExecStart=/usr/local/lib/omanywhere-firstboot
+
+      [Install]
+      WantedBy=multi-user.target
+runcmd:
+  - [systemctl, enable, omanywhere-firstboot.service]
+  - [systemctl, start, --no-block, omanywhere-firstboot.service]
