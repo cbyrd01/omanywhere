@@ -307,7 +307,7 @@ EOF
 }
 
 prepare() {
-  local OMANYWHERE_CARD OMANYWHERE_CARD_KIND OMANYWHERE_CARD_DRIVER sysfs off
+  local OMANYWHERE_CARD OMANYWHERE_CARD_KIND OMANYWHERE_CARD_DRIVER sysfs card off
   # shellcheck source=/dev/null # written by check, as root
   source "$env_file"
   local render gliff
@@ -335,6 +335,11 @@ EOF
   fi
 
   sysfs=$(card_sysfs "$OMANYWHERE_CARD")
+  card=${sysfs##*/}
+  [[ $card =~ ^card[0-9]+$ ]] || {
+    say "unexpected sysfs name '$card' for $OMANYWHERE_CARD"
+    exit 1
+  }
   off=$(connectors "$sysfs" | paste -sd ' ')
   install -D -m 0644 /dev/stdin "$rules" <<EOF
 -- Written by /usr/lib/omanywhere/session for this boot's DRM card,
@@ -343,17 +348,19 @@ EOF
 
 -- The card's connectors, off from the first frame: a specific output's rule
 -- beats Omarchy's output = "" rule in hypr/monitors.lua. They're read from
--- sysfs (/sys/class/drm/${sysfs##*/}-DP-1 is DP-1) at every load, as a reload
+-- sysfs (/sys/class/drm/${card}-DP-1 is DP-1) at every load, as a reload
 -- clears the rules, get_monitors() below leaves out a disabled output, and
 -- the kernel can make a connector after boot (a DisplayPort MST stream).
 local ls = io.popen("ls /sys/class/drm")
-for entry in ls:lines() do
-  local name = entry:match("^${sysfs##*/}%-(.+)$")
-  if name then
-    hl.monitor({ output = name, disabled = true })
+if ls then
+  for entry in ls:lines() do
+    local name = entry:match("^${card}%-(.+)$")
+    if name then
+      hl.monitor({ output = name, disabled = true })
+    end
   end
+  ls:close()
 end
-ls:close()
 
 -- A connector that appears while Hyprland runs is turned off as it
 -- appears, after its first modeset, so the rules above stay the first line

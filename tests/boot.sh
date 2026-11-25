@@ -111,6 +111,21 @@ done
 [[ $logs != *"kept info $$"* ]] || fail "a journal info line is in docker logs"
 pass "docker logs carries the journal's warnings, not its info lines"
 
+# The owner script's warnings and failures carry journald's <4> or <3>
+# prefix under systemd, so they reach docker logs too. In a unit without the
+# container's environment it finds no key and fails.
+cexec "$name" systemd-run -q --wait --unit=omanywhere-test-owner.service /usr/lib/omanywhere/owner &&
+  fail "the owner script succeeded with no key and no password"
+cexec "$name" systemctl reset-failed omanywhere-test-owner.service
+for _ in {1..20}; do
+  logs=$(docker logs "$name" 2>&1)
+  [[ $logs == *"no authorized key and no password"* ]] && break
+  sleep 0.5
+done
+[[ $logs == *"no authorized key and no password"* ]] || fail "the owner's failure is not in docker logs"
+[[ $logs != *"<3>"* ]] || fail "docker logs shows journald's <3> prefix"
+pass "docker logs carries the owner's failures"
+
 # Every failed (or restart-looping) unit must be in the allow list, which
 # carries a reason for each.
 check_failed "$name" "$here/allowed-failed.txt"

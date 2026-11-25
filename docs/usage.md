@@ -198,9 +198,9 @@ console output to `/dev/null`. With one, `docker logs omanywhere-NAME` shows:
   nothing. It's only noise in the logs.
 
 Docker's default log driver, `json-file`, keeps a container's logs without a size limit, and
-`omanywhere` leaves the choice of driver to the host. To cap them, set rotation in
-`/etc/docker/daemon.json`, such as `"log-opts": {"max-size": "10m", "max-file": "3"}`, then
-restart Docker. It applies to containers made after that.
+`omanywhere` leaves the choice of driver to the host. Set rotation in `/etc/docker/daemon.json`,
+such as `"log-opts": {"max-size": "10m", "max-file": "3"}`, then restart Docker; it applies to
+containers made after that.
 
 ### Running the image without `omanywhere`
 
