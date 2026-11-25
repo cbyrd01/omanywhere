@@ -490,11 +490,14 @@ done
 key=$(cat "$data/state/ssh/ssh_host_ed25519_key.pub")
 "$cli" down "$dname" >/dev/null || fail "down of the --data container failed"
 fails "keeps its files in $data/home, not $tmp/other/home" up "$dname" --data "$tmp/other"
+mv "$data" "$tmp/moved"
+fails "keeps its files in $data/home, which is gone" up "$dname"
+mv "$tmp/moved" "$data"
 out=$("$cli" up "$dname" 2>&1) || fail "up again, without --data, failed: $out"
 [[ $(cexec "$dcontainer" cat /var/lib/omanywhere/ssh/ssh_host_ed25519_key.pub) == "$key" ]] ||
   fail "the container made again has another host key"
 out=$("$cli" down "$dname" --purge --yes 2>&1) || fail "down --purge of the --data container failed: $out"
-[[ $out == *"the volumes' files stay in $data/home $data/state"* ]] || fail "down --purge did not say the files stay: $out"
+[[ $out == *"the removed volumes' files stay in $data/home $data/state"* ]] || fail "down --purge did not say the files stay: $out"
 exists volume "$dcontainer-home" && fail "down --purge left $dcontainer-home"
 [[ $(cat "$data/state/ssh/ssh_host_ed25519_key.pub") == "$key" ]] || fail "down --purge removed the files in $data"
 pass "up --data: Docker fills DIR/home and DIR/state from the image, down and up keep them, another DIR is refused, and down --purge leaves the files"

@@ -122,11 +122,12 @@ home and `DIR/state` the container's identity. They are still Docker volumes, ma
 empty one from the image, as it does any volume, and the first boot is the same.
 
 - **Backups.** The host's own backup reaches the files: a btrfs or ZFS snapshot of `DIR`, or
-  restic or rsync run as root. Much of `DIR/state` and parts of `DIR/home` are root's, and `up`
-  makes `DIR` mode 0700. A snapshot taken while the desktop runs holds every file as at one
-  instant, as after a power cut, which browsers and databases recover from. A copy file by
-  file can catch a browser profile or a database mid-write, so for that, stop the container
-  first (`docker stop omanywhere-NAME`, then `up NAME`).
+  restic or rsync run as root. Much of `DIR/state` and parts of `DIR/home` are root's. The files
+  keep their modes from the container, so the owner's home is 0700 and the ssh host key 0600,
+  and the directories `up` makes, `DIR` among them, are 0700. A snapshot taken while the desktop
+  runs holds every file as at one instant, as after a power cut, which browsers and databases
+  recover from. A copy file by file can catch a browser profile or a database mid-write, so for
+  that, stop the container first (`docker stop omanywhere-NAME`, then `up NAME`).
 - **Moving or restoring.** A directory that already holds files is used as it is, so copying
   `DIR` to another host, as root to keep the owners, and running `up NAME --data DIR` with the
   same keys brings the desktop back with its home, machine-id and ssh host key.
