@@ -27,6 +27,13 @@ host=$here/../bin/omanywhere-host
 cli=$here/../bin/omanywhere
 export OMANYWHERE_IMAGE=$IMAGE OMANYWHERE_CONFIG_DIR=/root/omanywhere-config
 
+# off_seat CARD: CARD is off the host's seat (the udev rule).
+off_seat() {
+  local seat
+  seat=$(udevadm info -q property -n "$1" | sed -n 's/^ID_SEAT=//p')
+  [[ $seat == omanywhere ]] || fail "$1 is on seat '${seat:-seat0}', not off the host's seat"
+}
+
 # node NAME: the /dev/dri node of the vkms card for omanywhere-NAME.
 node() {
   local sys
@@ -52,7 +59,8 @@ if [[ $phase == first ]]; then
   out=$("$host" vkms add 'Bad_Name' 2>&1) && fail "vkms add took a bad name: $out"
   "$host" vkms add desk
   first=$(node desk) || fail "vkms add desk made no card"
-  pass "vkms add desk: $first"
+  off_seat "$first"
+  pass "vkms add desk: $first, off the host's seat"
 
   test_key /root
   "$cli" up desk --gpu vkms --key /root/id_ed25519.pub
@@ -87,8 +95,7 @@ fi
 for name in desk other; do
   systemctl -q is-active "omanywhere-vkms@$name.service" || fail "omanywhere-vkms@$name is not active after the reboot"
   card=$(node "$name") || fail "no vkms card for $name after the reboot"
-  seat=$(udevadm info -q property -n "$card" | sed -n 's/^ID_SEAT=//p')
-  [[ $seat == omanywhere ]] || fail "$card is on seat '${seat:-seat0}', not off the host's seat"
+  off_seat "$card"
 done
 pass "after the reboot: omanywhere-vkms@desk and @other made their cards, off the host's seat"
 out=$("$host" setup --yes 2>&1) || fail "setup failed after the reboot: $out"

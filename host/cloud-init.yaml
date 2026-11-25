@@ -4,9 +4,10 @@
 # the values in /etc/omanywhere/cloud-init.env below first.
 #
 # On first boot omanywhere-firstboot.service installs git, clones omanywhere
-# at OMANYWHERE_REF, runs bin/omanywhere-host setup, adds the image's user
-# (arch) to the docker group, builds the image (about 30 GB of disk and half
-# an hour or more) and starts the desktop NAME with GITHUB_USER's ssh keys.
+# at OMANYWHERE_REF into /opt/omanywhere (root's), runs bin/omanywhere-host
+# setup, adds the image's user (arch) to the docker group, builds the image
+# (about 30 GB of disk and half an hour or more) and starts the desktop NAME,
+# as arch, with GITHUB_USER's ssh keys.
 # When the upgrade that installing git takes replaces the kernel, it reboots
 # into the new one and goes on from there. Follow it with
 # journalctl -u omanywhere-firstboot -f.
@@ -39,11 +40,14 @@ write_files:
       as_arch() {
         runuser -u arch -- env -u XDG_CONFIG_HOME HOME=/home/arch "$@"
       }
-      if [[ ! -d /opt/omanywhere/.git ]]; then
+      # The checkout is root's, since root runs it: it is moved into place
+      # only once OMANYWHERE_REF is checked out.
+      if [[ ! -d /opt/omanywhere ]]; then
         pacman -Syu --noconfirm --needed git
-        install -d -o arch -g arch /opt/omanywhere
-        as_arch git clone -q https://github.com/cbyrd01/omanywhere /opt/omanywhere
-        as_arch git -C /opt/omanywhere checkout -q "$OMANYWHERE_REF"
+        rm -rf /opt/omanywhere.new
+        git clone -q https://github.com/cbyrd01/omanywhere /opt/omanywhere.new
+        git -C /opt/omanywhere.new checkout -q --detach "$OMANYWHERE_REF" --
+        mv /opt/omanywhere.new /opt/omanywhere
       fi
       # The upgrade replaced the kernel: its modules (vkms, Docker's) are
       # gone until the host boots the new one. This unit runs again then.
@@ -61,7 +65,7 @@ write_files:
         /opt/omanywhere/bin/omanywhere-host vkms add "$NAME"
         gpu=vkms
       fi
-      as_arch make -C /opt/omanywhere image
+      make -C /opt/omanywhere image
       as_arch /opt/omanywhere/bin/omanywhere up "$NAME" --gpu "$gpu" --github "$GITHUB_USER" --yes
       touch /var/lib/omanywhere-firstboot.done
   - path: /etc/systemd/system/omanywhere-firstboot.service
@@ -70,7 +74,8 @@ write_files:
       [Unit]
       Description=omanywhere's first boot: host setup, the image and one desktop
       Wants=network-online.target
-      After=network-online.target
+      # pacman-init makes the image's pacman keyring on first boot.
+      After=network-online.target pacman-init.service
       ConditionPathExists=!/var/lib/omanywhere-firstboot.done
 
       [Service]

@@ -327,7 +327,8 @@ Arch doesn't support partial ones. Then it sets up the host's GPU:
   host's seat, and `omanywhere-vkms@.service`, which makes each container's vkms card.
 
 It adds no one to the `docker` group. Membership is root-equivalent, so it's your decision:
-`sudo usermod -aG docker USER`, then log in again. Or run `omanywhere` with sudo.
+`sudo usermod -aG docker USER`, then log in again. Or run `omanywhere` with sudo, which keeps
+root's own config in `/root/.config/omanywhere`.
 
 On a vkms host, give each container its own card, then make the container on it:
 
@@ -339,7 +340,8 @@ bin/omanywhere up desk --gpu vkms
 `--gpu vkms` finds the container's card by its name. Card numbers can change from one boot to
 the next, and a container's devices are fixed when it's made, so when the card's number has
 moved, `up` makes the container again from the same image, on the new card, keeping its
-volumes, keys, password and settings. After `down desk`, remove the card with
+volumes, keys, password and settings. As with `down` and `up`, anything installed in the
+container's root, outside the volumes, is gone. After `down desk`, remove the card with
 `sudo bin/omanywhere-host vkms remove desk`.
 
 setup installs only its own files: `/usr/local/bin/omanywhere-host` (the copy the boot unit

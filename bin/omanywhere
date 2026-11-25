@@ -178,7 +178,7 @@ remake_if_card_moved() {
   [[ " $devs" != *" /dev/dri/$card "* ]] || return 0
   [[ -z $mounted ]] || has_password ||
     die "$container was made with a password, and $config/password is gone or blank: write it back, or omanywhere down $name, then up"
-  say "$container's vkms card is now /dev/dri/$card, not ${devs% }: making it again from the same image, with the same volumes and settings"
+  say "$container's vkms card is now /dev/dri/$card, not ${devs% }: making it again from the same image, with the same volumes and settings (its root is reset, as with down and up)"
   image=$made_from state=absent remake=1 opt_gpu='' opt_listen='' opt_master='' opt_password=''
 }
 
