@@ -47,8 +47,9 @@ config=$OMANYWHERE_CONFIG_DIR/$name
 trap '"$cli" down "$name" --purge --yes >/dev/null 2>&1 || true
   "$cli" down "$name-pw" --purge --yes >/dev/null 2>&1 || true
   "$cli" down "$name-data" --purge --yes >/dev/null 2>&1 || true
+  "$cli" down "$name-store" --purge --yes >/dev/null 2>&1 || true
   cleanup "$container" "$container-pw" "$container-holder" "$container-blocker" "$container-port"
-  remove_volumes "$home_volume" "$state_volume" "$container-data-home" "$container-data-state" "$container-store-home"
+  remove_volumes "$home_volume" "$state_volume" "$container-data-home" "$container-data-state" "$container-store-home" "$container-store-state"
   [[ ! -d $tmp/data ]] || docker run --rm --network none -v "$tmp:/t" --entrypoint rm "$IMAGE" -rf /t/data
   rm -rf "$tmp"' EXIT
 
@@ -468,12 +469,13 @@ cexec "$pwcontainer" runuser -u "$user" -- sudo -n true || fail "sudo asks for a
 pass "up --no-password: the password file is deleted, and the new container has none"
 "$cli" down "$pwname" --purge --yes >/dev/null || fail "down --purge of the second container failed"
 
-# --- up --data: the volumes keep their files in DIR/home and DIR/state,
+# --- up --data: the volumes keep their files in DIR/NAME/home and state,
 # which Docker fills from the image. down and up keep them there, a
 # different --data is refused, and down --purge leaves the files.
 dname=$name-data
 dcontainer=omanywhere-$dname
 check_name "$dcontainer"
+sname=$name-store
 data=$tmp/data
 fails "takes a directory other than /, whose path has no comma" up "$dname" --gpu none --key "$tmp/id_ed25519.pub" --data "$tmp/a,b"
 fails "takes a directory other than /" up "$dname" --gpu none --key "$tmp/id_ed25519.pub" --data /
@@ -481,28 +483,39 @@ exists volume "$dcontainer-home" && fail "a refused up --data made a volume"
 out=$("$cli" up "$dname" --gpu none --key "$tmp/id_ed25519.pub" --data "$data" 2>&1) || fail "up --data failed: $out"
 for sub in home state; do
   dir=$(docker volume inspect -f '{{index .Options "device"}}' "$dcontainer-$sub")
-  [[ $dir == "$data/$sub" ]] || fail "$dcontainer-$sub keeps its files in '$dir', not $data/$sub"
+  [[ $dir == "$data/$dname/$sub" ]] || fail "$dcontainer-$sub keeps its files in '$dir', not $data/$dname/$sub"
 done
-[[ -d $data/home/$user && -e $data/state/ssh/ssh_host_ed25519_key.pub ]] ||
+[[ -d $data/$dname/home/$user && -e $data/$dname/state/ssh/ssh_host_ed25519_key.pub ]] ||
   fail "the image's home and the host key are not in $data: $(find "$data" -maxdepth 3 2>&1 | head -20)"
-[[ $(stat -c %a "$data") == 700 ]] || fail "$data is $(stat -c %a "$data"), not 700"
-[[ $("$cli" status "$dname") == *"data       $data/home and $data/state"* ]] || fail "status does not show the data directory"
-key=$(cat "$data/state/ssh/ssh_host_ed25519_key.pub")
+for dir in "$data" "$data/$dname"; do
+  [[ $(stat -c %a "$dir") == 700 ]] || fail "$dir is $(stat -c %a "$dir"), not 700"
+done
+[[ $("$cli" status "$dname") == *"data       $data/$dname/home and $data/$dname/state"* ]] || fail "status does not show the data directory"
+key=$(cat "$data/$dname/state/ssh/ssh_host_ed25519_key.pub")
+out=$("$cli" up "$sname" --gpu none --key "$tmp/id_ed25519.pub" --data "$data" 2>&1) || fail "a second up --data in the same DIR failed: $out"
+[[ $(docker volume inspect -f '{{index .Options "device"}}' "omanywhere-$sname-home") == "$data/$sname/home" ]] ||
+  fail "a second desktop in $data does not keep its home in $data/$sname/home"
+"$cli" down "$sname" --purge --yes >/dev/null || fail "down --purge of the second --data desktop failed"
+docker volume create --opt type=none --opt o=bind --opt "device=$tmp/flat/home" "omanywhere-$sname-home" >/dev/null
+fails "keeps its files in $tmp/flat/home, not in a DIR/$sname/home" up "$sname"
+remove_volumes "omanywhere-$sname-home"
+mkdir -p "$tmp/linked" && ln -s "$data/$dname" "$tmp/linked/$sname"
+fails "$tmp/linked/$sname is a symlink" up "$sname" --gpu none --key "$tmp/id_ed25519.pub" --data "$tmp/linked"
+exists volume "omanywhere-$sname-home" && fail "a refused up --data on a symlink made a volume"
 "$cli" down "$dname" >/dev/null || fail "down of the --data container failed"
-fails "keeps its files in $data/home, not $tmp/other/home" up "$dname" --data "$tmp/other"
+fails "keeps its files in $data/$dname/home, not $tmp/other/$dname/home, and up doesn't move them: pass --data $data, or leave it out" up "$dname" --data "$tmp/other"
 mv "$data" "$tmp/moved"
-fails "keeps its files in $data/home, which is gone" up "$dname"
+fails "keeps its files in $data/$dname/home, which is gone" up "$dname"
 mv "$tmp/moved" "$data"
 out=$("$cli" up "$dname" 2>&1) || fail "up again, without --data, failed: $out"
 [[ $(cexec "$dcontainer" cat /var/lib/omanywhere/ssh/ssh_host_ed25519_key.pub) == "$key" ]] ||
   fail "the container made again has another host key"
 out=$("$cli" down "$dname" --purge --yes 2>&1) || fail "down --purge of the --data container failed: $out"
-[[ $out == *"the removed volumes' files stay in $data/home $data/state"* ]] || fail "down --purge did not say the files stay: $out"
+[[ $out == *"the removed volumes' files stay in $data/$dname/home $data/$dname/state"* ]] || fail "down --purge did not say the files stay: $out"
 exists volume "$dcontainer-home" && fail "down --purge left $dcontainer-home"
-[[ $(cat "$data/state/ssh/ssh_host_ed25519_key.pub") == "$key" ]] || fail "down --purge removed the files in $data"
-pass "up --data: Docker fills DIR/home and DIR/state from the image, down and up keep them, another DIR is refused, and down --purge leaves the files"
+[[ $(cat "$data/$dname/state/ssh/ssh_host_ed25519_key.pub") == "$key" ]] || fail "down --purge removed the files in $data"
+pass "up --data: Docker fills DIR/NAME/home and DIR/NAME/state from the image, down and up keep them, another desktop shares DIR in its own DIR/NAME, another DIR, a volume outside DIR/NAME and a symlink are refused, and down --purge leaves the files"
 # --data on a volume in Docker's own store is refused.
-sname=$name-store
 check_name "omanywhere-$sname"
 docker volume create "omanywhere-$sname-home" >/dev/null
 fails "is in Docker's own volume store" up "$sname" --gpu none --key "$tmp/id_ed25519.pub" --data "$tmp/store"
