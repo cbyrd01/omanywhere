@@ -43,9 +43,14 @@ export OMANYWHERE_IMAGE=$IMAGE OMANYWHERE_CONFIG_DIR=$tmp/config
 config=$OMANYWHERE_CONFIG_DIR/$name
 # down --purge --yes is the cleanup; the helpers after it catch whatever it
 # leaves if the CLI itself is broken.
+# up --data leaves files root owns in $tmp/data, which a container removes.
 trap '"$cli" down "$name" --purge --yes >/dev/null 2>&1 || true
   "$cli" down "$name-pw" --purge --yes >/dev/null 2>&1 || true
-  cleanup "$container" "$container-pw" "$container-holder" "$container-blocker" "$container-port"; remove_volumes "$home_volume" "$state_volume"; rm -rf "$tmp"' EXIT
+  "$cli" down "$name-data" --purge --yes >/dev/null 2>&1 || true
+  cleanup "$container" "$container-pw" "$container-holder" "$container-blocker" "$container-port"
+  remove_volumes "$home_volume" "$state_volume" "$container-data-home" "$container-data-state" "$container-store-home"
+  [[ ! -d $tmp/data ]] || docker run --rm --network none -v "$tmp:/t" --entrypoint rm "$IMAGE" -rf /t/data
+  rm -rf "$tmp"' EXIT
 
 docker image inspect "$IMAGE" >/dev/null 2>&1 || fail "image $IMAGE not found (run make image)"
 [[ -x $cli ]] || fail "$cli is missing or not executable"
@@ -462,6 +467,48 @@ cexec "$pwcontainer" test ! -e /run/secrets/password || fail "the container has 
 cexec "$pwcontainer" runuser -u "$user" -- sudo -n true || fail "sudo asks for a password after --no-password"
 pass "up --no-password: the password file is deleted, and the new container has none"
 "$cli" down "$pwname" --purge --yes >/dev/null || fail "down --purge of the second container failed"
+
+# --- up --data: the volumes keep their files in DIR/home and DIR/state,
+# which Docker fills from the image. down and up keep them there, a
+# different --data is refused, and down --purge leaves the files.
+dname=$name-data
+dcontainer=omanywhere-$dname
+check_name "$dcontainer"
+data=$tmp/data
+fails "takes a directory other than /, whose path has no comma" up "$dname" --gpu none --key "$tmp/id_ed25519.pub" --data "$tmp/a,b"
+fails "takes a directory other than /" up "$dname" --gpu none --key "$tmp/id_ed25519.pub" --data /
+exists volume "$dcontainer-home" && fail "a refused up --data made a volume"
+out=$("$cli" up "$dname" --gpu none --key "$tmp/id_ed25519.pub" --data "$data" 2>&1) || fail "up --data failed: $out"
+for sub in home state; do
+  dir=$(docker volume inspect -f '{{index .Options "device"}}' "$dcontainer-$sub")
+  [[ $dir == "$data/$sub" ]] || fail "$dcontainer-$sub keeps its files in '$dir', not $data/$sub"
+done
+[[ -d $data/home/$user && -e $data/state/ssh/ssh_host_ed25519_key.pub ]] ||
+  fail "the image's home and the host key are not in $data: $(find "$data" -maxdepth 3 2>&1 | head -20)"
+[[ $(stat -c %a "$data") == 700 ]] || fail "$data is $(stat -c %a "$data"), not 700"
+[[ $("$cli" status "$dname") == *"data       $data/home and $data/state"* ]] || fail "status does not show the data directory"
+key=$(cat "$data/state/ssh/ssh_host_ed25519_key.pub")
+"$cli" down "$dname" >/dev/null || fail "down of the --data container failed"
+fails "keeps its files in $data/home, not $tmp/other/home" up "$dname" --data "$tmp/other"
+mv "$data" "$tmp/moved"
+fails "keeps its files in $data/home, which is gone" up "$dname"
+mv "$tmp/moved" "$data"
+out=$("$cli" up "$dname" 2>&1) || fail "up again, without --data, failed: $out"
+[[ $(cexec "$dcontainer" cat /var/lib/omanywhere/ssh/ssh_host_ed25519_key.pub) == "$key" ]] ||
+  fail "the container made again has another host key"
+out=$("$cli" down "$dname" --purge --yes 2>&1) || fail "down --purge of the --data container failed: $out"
+[[ $out == *"the removed volumes' files stay in $data/home $data/state"* ]] || fail "down --purge did not say the files stay: $out"
+exists volume "$dcontainer-home" && fail "down --purge left $dcontainer-home"
+[[ $(cat "$data/state/ssh/ssh_host_ed25519_key.pub") == "$key" ]] || fail "down --purge removed the files in $data"
+pass "up --data: Docker fills DIR/home and DIR/state from the image, down and up keep them, another DIR is refused, and down --purge leaves the files"
+# --data on a volume in Docker's own store is refused.
+sname=$name-store
+check_name "omanywhere-$sname"
+docker volume create "omanywhere-$sname-home" >/dev/null
+fails "is in Docker's own volume store" up "$sname" --gpu none --key "$tmp/id_ed25519.pub" --data "$tmp/store"
+exists container "omanywhere-$sname" && fail "a refused up --data made a container"
+remove_volumes "omanywhere-$sname-home"
+pass "up --data refuses a volume already in Docker's own store"
 
 # --- down --purge: asks, and with no terminal refuses without --yes.
 out=$("$cli" down "$name" --purge </dev/null 2>&1) && fail "down --purge without --yes or a terminal succeeded: $out"
