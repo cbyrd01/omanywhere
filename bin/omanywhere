@@ -479,18 +479,16 @@ cmd_up() {
     # An existing container keeps what it was made with: a password if it
     # mounts one, which must still be there to start it.
     opt_password=''
-    [[ -z $(docker container inspect -f '{{range .Mounts}}{{if eq .Destination "/run/secrets/password"}}y{{end}}{{end}}' "$container") ]] ||
-      password=yes
+    local mounted
+    mounted=$(docker container inspect -f '{{range .Mounts}}{{if eq .Destination "/run/secrets/password"}}y{{end}}{{end}}' "$container") ||
+      die "could not inspect $container"
+    [[ -z $mounted ]] || password=yes
     [[ -z $password ]] || has_password ||
       die "$container was made with a password, and $config/password is gone or blank: write it back, or omanywhere down $name, then up"
   fi
   keys=$(new_keys "$keyfile" "$github") || exit 1
   (umask 077 && mkdir -p "$config")
   write_keys "$keys"
-  if [[ $opt_password == no && -e $config/password ]]; then
-    rm -f "$config/password"
-    say "deleted $config/password: $container will have no password"
-  fi
   [[ -z $opt_password || -z $password ]] || make_password
   if [[ -n $password && -n $listen && $listen != 127.* && $listen != ::1 ]] && ! has_key "$(<"$config/authorized_keys")"; then
     say "warning: no ssh key, so ssh on $listen takes only the password; anyone who can reach that address can guess it. Add a key (up $name --key FILE) or listen on 127.0.0.1"
@@ -534,6 +532,11 @@ If another program has taken port $port, free it and run up again, or delete the
       port=
     done
     save_settings
+    # Only once the container is made, so a failed up keeps the file.
+    if [[ $opt_password == no && -e $config/password ]]; then
+      rm -f "$config/password"
+      say "deleted $config/password: $container has no password"
+    fi
   fi
 
   say "waiting for systemd in $container"

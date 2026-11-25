@@ -271,7 +271,9 @@ idle=$(as_owner sh -c '
   if [ -z "$2" ]; then
     [ "$lock" = 0 ] && exit 0
     { mkdir -p "${marker%/*}" && : >"$marker"; } || { echo failed; exit 0; }
-    if edit ".idle.lock = 0"; then echo off; else rm -f "$marker"; echo failed; fi
+    # On a failure the marker stays: a later password boot finds the lock
+    # not 0 and only removes it, or 0 and restores it.
+    if edit ".idle.lock = 0"; then echo off; else echo failed; fi
   elif [ "$lock" != 0 ]; then
     rm -f "$marker"; echo kept
   elif edit "del(.idle.lock)"; then
