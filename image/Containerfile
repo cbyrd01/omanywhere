@@ -192,4 +192,10 @@ FROM scratch
 COPY --from=system / /
 ENV container=docker
 STOPSIGNAL SIGRTMIN+3
+# Docker's health (docker ps, docker inspect): systemd running, sshd active,
+# and the desktop up unless the container has no card
+# (package/omanywhere/health). Failures in the 4-minute start period, longer
+# than up's 3-minute wait for boot, don't count.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=4m --start-interval=5s --retries=3 \
+  CMD ["/usr/lib/omanywhere/health"]
 CMD ["/usr/lib/systemd/systemd"]

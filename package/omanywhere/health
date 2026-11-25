@@ -1,0 +1,22 @@
+#!/bin/bash
+# The image's HEALTHCHECK (image/Containerfile): healthy when systemd is
+# running, sshd is active, and the desktop session runs. A container with no
+# DRM card has no desktop by design (up --gpu none), so it passes without one.
+# A desktop that was skipped although the container has a card (a refused DRM
+# master, no free vkms card) fails it: omanywhere status NAME says why.
+# It prints one line, which docker inspect keeps with the result.
+set -u
+
+bad() {
+  echo "$*"
+  exit 1
+}
+
+state=$(systemctl is-system-running) || bad "systemd is ${state:-unknown}"
+state=$(systemctl is-active sshd.service) || bad "sshd is $state"
+compgen -G '/dev/dri/card*' >/dev/null || {
+  echo "ok: no DRM card, so no desktop"
+  exit 0
+}
+state=$(systemctl is-active omanywhere-session.service) || bad "the desktop is $state"
+echo ok

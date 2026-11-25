@@ -1,9 +1,9 @@
 # The one package omanywhere adds to stock Omarchy. It never replaces or edits
-# a file another package owns: it adds its own unit, script, drop-ins, preset,
-# tmpfiles entry, sshd_config.d file and sudoers.d file. (pacman.conf's one
-# extra line is image configuration, set in image/Containerfile.) Built from
-# these local files by image/Containerfile's package stage, which also copies
-# in the repository's LICENSE; nothing is downloaded.
+# a file another package owns: it adds its own unit, scripts, drop-ins,
+# preset, tmpfiles entry, sshd_config.d file and sudoers.d file. (pacman.conf's
+# one extra line is image configuration, set in image/Containerfile.) Built
+# from these local files by image/Containerfile's package stage, which also
+# copies in the repository's LICENSE; nothing is downloaded.
 pkgname=omanywhere
 pkgver=0.1.0
 pkgrel=1
@@ -29,10 +29,11 @@ source=(
   omanywhere-session.service
   hyprland.lua
   polkit.conf
+  health
   LICENSE
 )
 # Local files in this repository, which git already pins.
-sha256sums=(SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP)
+sha256sums=(SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP SKIP)
 
 check() {
   visudo -cf 00-omanywhere-wheel
@@ -44,6 +45,7 @@ package() {
 
   install -Dm0755 owner "$pkgdir/usr/lib/omanywhere/owner"
   install -Dm0755 session "$pkgdir/usr/lib/omanywhere/session"
+  install -Dm0755 health "$pkgdir/usr/lib/omanywhere/health"
   install -Dm0644 pre-refresh-pacman "$pkgdir/usr/lib/omanywhere/pre-refresh-pacman"
   install -Dm0644 omanywhere-owner.service "$pkgdir/$units/omanywhere-owner.service"
   install -Dm0644 omanywhere-session.service "$pkgdir/$units/omanywhere-session.service"
