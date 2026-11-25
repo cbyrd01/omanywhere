@@ -283,7 +283,7 @@ check() {
   elif ((${#ignored[@]})); then
     local pass="a GPU (--device nvidia.com/gpu=all or /dev/dri)"
     [[ ${ignored[*]} != *"no GBM backend"* ]] ||
-      pass="the NVIDIA GPU through CDI (--device nvidia.com/gpu=all), not as plain /dev/dri,"
+      pass="the NVIDIA GPU through CDI (--device nvidia.com/gpu=all) instead of plain /dev/dri,"
     say "no usable DRM card: ${ignored[*]}; pass $pass or a host vkms card"
     exit 1
   else

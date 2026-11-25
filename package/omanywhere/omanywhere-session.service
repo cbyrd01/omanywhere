@@ -37,8 +37,9 @@ Environment=HYPRLAND_CONFIG=/usr/share/omanywhere/hypr/hyprland.lua LIBSEAT_BACK
 SyslogIdentifier=omanywhere-session
 # Why the session was skipped or refused shows in docker logs too. journald
 # forwards to the console only up to MaxLevelConsole (warning, in
-# /usr/lib/systemd/journald.conf.d/omanywhere.conf), so these few lines are
-# logged at that level.
+# /usr/lib/systemd/journald.conf.d/omanywhere.conf), so the unit's own output
+# is logged at that level: the session's few lines, and uwsm's, which writes
+# here only when it fails. Hyprland runs in the owner's user manager, not here.
 StandardError=journal+console
 SyslogLevel=warning
 # check and prepare run as root (+), outside the PAM session.

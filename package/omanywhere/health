@@ -15,9 +15,10 @@ bad() {
 # A degraded system names its failed units: a desktop that keeps failing to
 # start (Hyprland can't render on the card) ends as one of them.
 if ! state=$(systemctl is-system-running); then
+  failed=''
   [[ $state != degraded ]] ||
-    bad "systemd is degraded: $(systemctl list-units --state=failed --plain --no-legend --full | cut -d' ' -f1 | paste -sd ' ') failed"
-  bad "systemd is ${state:-unknown}"
+    failed=$(systemctl list-units --state=failed --plain --no-legend --full | cut -d' ' -f1 | paste -sd ' ')
+  bad "systemd is ${state:-unknown}${failed:+: $failed failed}"
 fi
 state=$(systemctl is-active sshd.service) || bad "sshd is $state"
 compgen -G '/dev/dri/card*' >/dev/null || {
