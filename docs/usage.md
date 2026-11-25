@@ -42,7 +42,7 @@ window. You need no other gliff flags on a GPU host or on a CPU-only host (see
 | `status NAME` | Shows the container, systemd, the owner unit, the desktop session (and why it was skipped, if it was), and the ssh endpoint. Exits 1 if the container doesn't exist. |
 | `ssh-config NAME` | Prints a `Host omanywhere-NAME` block for `~/.ssh/config`. |
 | `down NAME` | Stops and removes the container. It keeps the volumes and the config. |
-| `down NAME --purge [--yes]` | Also removes the volumes and the config, after you confirm. Use `--yes` to skip the prompt, which you need when there's no terminal. |
+| `down NAME --purge [--yes]` | Also removes the volumes and the config, after you confirm. Use `--yes` to skip the prompt, which you need when there's no terminal. The files of volumes made with `--data` stay in their directory. |
 
 NAME is 1 to 32 lower-case letters, digits and inner hyphens. From it come these names:
 
@@ -76,6 +76,7 @@ container, run `down NAME` and then `up NAME --option`.
 | `--drm-master allow` | off | Lets the desktop take DRM master of a GPU that no display server holds (see [DRM master](#drm-master)). |
 | `--password` | off | Gives the owner a password, so sudo and polkit ask for it, and the idle lock stays on. `up` makes a random one in `~/.config/omanywhere/NAME/password`, or keeps the one already there (write your own first, one non-blank line). Without a password, sudo and polkit ask the owner for none, as in Toolbox, and the idle lock is off. Any program running as the owner, a bad package or a browser exploit say, can then become root in the container. With rootful Docker, root in the container is uid 0 on the host, held back only by the container's limits. With no key either, the desktop is [password-only](#password-only-desktops). |
 | `--no-password` | | Deletes `~/.config/omanywhere/NAME/password`, so the next container has none. |
+| `--data DIR` | Docker's volume store | Keeps the volumes' files in `DIR/home` and `DIR/state`, where the host's own backups can reach them (see [Keeping the volumes in a directory](#keeping-the-volumes-in-a-directory)). |
 
 `--key` and `--github` also work on a container that already exists. `up` rewrites its keys
 file, and the new keys take effect at the container's next start. Without either, the keys
@@ -98,7 +99,8 @@ On the first `up`, the config directory gets these files:
 - `authorized_keys`, mounted read-only at `/run/secrets/authorized_keys` (empty with no key). Each line is a public
   key, and may start with authorized_keys options such as `from="…"`, which sshd applies. A
   `command="…"` would run instead of gliff-server, so gliff can't use that key.
-- `settings`: the listen address, the port, `--gpu` and `--drm-master`.
+- `settings`: the listen address, the port, `--gpu` and `--drm-master`. Docker keeps `--data`'s
+  directory with the volumes.
 
 On the first `up`, Docker picks a free port for ssh, and `up` keeps it after that, so the
 `ssh-config` block stays right. If another program has taken that port by a later `up`, `up`
@@ -110,6 +112,31 @@ prints that unit's journal. A key line that isn't a key causes this, for example
 be no way in, so `up` stops the container rather than leave it running. It does the same if
 systemd doesn't finish booting in 3 minutes. Fix the input, such as with `up NAME --key FILE` or `--github USER`,
 and run `up` again.
+
+### Keeping the volumes in a directory
+
+By default the two volumes live in Docker's own store, under `/var/lib/docker/volumes`.
+`up NAME --data DIR` makes them in a directory you choose instead: `DIR/home` holds the owner's
+home and `DIR/state` the container's identity. They are still Docker volumes, made with
+`docker volume create --opt type=none --opt o=bind --opt device=DIR/home`, so Docker fills an
+empty one from the image, as it does any volume, and the first boot is the same.
+
+- **Backups.** The host's own backup reaches the files: a btrfs or ZFS snapshot of `DIR`, or
+  restic or rsync run as root. Much of `DIR/state` and parts of `DIR/home` are root's, and `up`
+  makes `DIR` mode 0700. A snapshot taken while the desktop runs holds every file as at one
+  instant, as after a power cut, which browsers and databases recover from. A copy file by
+  file can catch a browser profile or a database mid-write, so for that, stop the container
+  first (`docker stop omanywhere-NAME`, then `up NAME`).
+- **Moving or restoring.** A directory that already holds files is used as it is, so copying
+  `DIR` to another host, as root to keep the owners, and running `up NAME --data DIR` with the
+  same keys brings the desktop back with its home, machine-id and ssh host key.
+- **Only when the volumes are made.** `up` never moves a desktop's files. With volumes in
+  Docker's store, or in another directory, `up --data` refuses and says where they are. To
+  move them, copy the files and run `down NAME --purge`, then `up NAME --data DIR`.
+- **Removing.** `down NAME --purge` removes the volumes but not `DIR`'s files, since `up` won't
+  delete a directory you named. It says where they are; delete them as root.
+
+`DIR` is a host path, so this is for Docker on the same host. It has no comma, and isn't `/`.
 
 ### Health
 

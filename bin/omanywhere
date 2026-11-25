@@ -37,7 +37,7 @@ usage() {
   cat >&2 <<'EOF'
 usage: omanywhere up NAME [--gpu auto|none|nvidia|dri|dri:/dev/dri/cardN|vkms]
                      [--key FILE | --github USER [--yes]] [--listen ADDR] [--drm-master allow]
-                     [--password | --no-password]
+                     [--password | --no-password] [--data DIR]
        omanywhere down NAME [--purge [--yes]]
        omanywhere ssh-config NAME
        omanywhere status NAME
@@ -86,6 +86,8 @@ check() {
     listen) [[ $2 =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ || ($2 =~ ^[0-9A-Fa-f:.]+$ && $2 == *:*) ]] ||
       die "$3 '$2': takes an IPv4 or IPv6 address, such as 127.0.0.1 or a tailnet address" ;;
     drm_master) [[ $2 == allow ]] || die "$3 '$2': takes allow" ;;
+    # Docker's volume options split on commas. Not /: its home is the host's.
+    data) [[ $2 == /?* && $2 != *[,$'\n']* ]] || die "$3 '$2': takes a directory other than /, whose path has no comma" ;;
     port) [[ $2 =~ ^[1-9][0-9]{0,4}$ && $2 -le 65535 ]] || die "$3 '$2': takes a TCP port" ;;
     # GitHub's rule: letters, digits and single inner hyphens, up to 39
     # characters. It also keeps the URL's path to one component.
@@ -116,6 +118,46 @@ save_settings() {
 }
 
 # --- Docker.
+
+# volume_dir VOLUME: the host directory the volume keeps its files in, made
+# by up --data; empty for one in Docker's own store. Fails if there's none.
+# Docker keeps it with the volume, so the settings don't.
+volume_dir() {
+  docker volume inspect -f '{{index .Options "device"}}' "$1" 2>/dev/null
+}
+
+# check_volumes: the volumes that exist already keep their files where they
+# are: up never moves them. Without --data, data takes their directory. It
+# sets missing to the volumes (home, state) that make_volumes makes.
+check_volumes() {
+  local sub have absent=()
+  for sub in home state; do
+    if ! have=$(volume_dir "$container-$sub"); then
+      absent+=("$sub")
+    elif [[ -z $have ]]; then
+      [[ -z $data ]] ||
+        die "$container-$sub is in Docker's own volume store, and up doesn't move a desktop's files: leave out --data, or remove the volumes first (down $name --purge)"
+    else
+      data=${data:-${have%/*}}
+      [[ $have == "$data/$sub" ]] ||
+        die "$container-$sub keeps its files in $have, not $data/$sub, and up doesn't move them: pass --data ${have%/*}, or leave it out"
+    fi
+  done
+  missing=()
+  [[ -z $data ]] || missing=("${absent[@]}")
+}
+
+# make_volumes: with --data, the missing volumes, in DIR/home and DIR/state.
+# Docker fills an empty one from the image, as it does a volume in its own
+# store, and uses a directory with files as it is.
+make_volumes() {
+  local sub
+  for sub in "${missing[@]}"; do
+    (umask 077 && mkdir -p -- "$data/$sub") || die "could not make $data/$sub"
+    docker volume create --opt type=none --opt o=bind --opt "device=$data/$sub" "$container-$sub" >/dev/null ||
+      die "could not make the volume $container-$sub in $data/$sub"
+  done
+}
 
 container_state() {
   local state
@@ -179,7 +221,7 @@ remake_if_card_moved() {
   [[ -z $mounted ]] || has_password ||
     die "$container was made with a password, and $config/password is gone or blank: write it back, or omanywhere down $name, then up"
   say "$container's vkms card is now /dev/dri/$card, not ${devs% }: making it again from the same image, with the same volumes and settings (its root is reset, as with down and up)"
-  image=$made_from state=absent remake=1 opt_gpu='' opt_listen='' opt_master='' opt_password=''
+  image=$made_from state=absent remake=1 opt_gpu='' opt_listen='' opt_master='' opt_password='' opt_data=''
 }
 
 # warn_nvidia CARD...: one warning if any of the host's cards (cardN) is
@@ -450,7 +492,7 @@ endpoint() {
 # --- Commands.
 
 cmd_up() {
-  local keyfile='' github='' yes='' opt_gpu='' opt_listen='' opt_master='' opt_password='' state keys password='' remake=''
+  local keyfile='' github='' yes='' opt_gpu='' opt_listen='' opt_master='' opt_password='' opt_data='' data='' state keys password='' remake='' missing=()
   set_name "${1:-}"
   shift
   while (($#)); do
@@ -490,6 +532,11 @@ cmd_up() {
         shift
         continue
         ;;
+      --data)
+        [[ -n ${2:-} ]] || die "--data takes a directory"
+        opt_data=$(realpath -m -- "$2")
+        check data "$opt_data" --data
+        ;;
       *) usage ;;
     esac
     shift 2
@@ -499,8 +546,8 @@ cmd_up() {
   docker image inspect "$image" >/dev/null 2>&1 || die "image $image not found: build it with make image"
 
   state=$(container_state)
-  [[ $state == absent || -z $opt_gpu$opt_listen$opt_master$opt_password ]] ||
-    say "ignoring --gpu, --listen, --drm-master, --password and --no-password: $container exists, and they apply when it's made (omanywhere down $name, then up)"
+  [[ $state == absent || -z $opt_gpu$opt_listen$opt_master$opt_password$opt_data ]] ||
+    say "ignoring --gpu, --listen, --drm-master, --password, --no-password and --data: $container exists, and they apply when it's made (omanywhere down $name, then up)"
   if [[ $state == running ]]; then
     if [[ -n $keyfile$github ]]; then
       keys=$(new_keys "$keyfile" "$github") || exit 1
@@ -518,7 +565,9 @@ cmd_up() {
     gpu=${opt_gpu:-${gpu:-auto}}
     listen=${opt_listen:-${listen:-127.0.0.1}}
     drm_master=${opt_master:-$drm_master}
+    data=$opt_data
     gpu_args "$gpu"
+    check_volumes
     if [[ -e $config/password && $opt_password != no ]]; then
       has_password || die "$config/password is blank: write a password in it, or delete it, or pass --no-password"
       [[ $(<"$config/password") != *$'\n'* ]] ||
@@ -552,6 +601,7 @@ cmd_up() {
       die "could not start $container; if another program has taken its ssh port, $(endpoint), free it and run up again"
   else
     [[ -z $remake ]] || docker rm "$container" >/dev/null || die "could not remove $container to make it again"
+    make_volumes
     say "making $container from $image: $gpu_note"
     local env=() bind out
     [[ -z $drm_master ]] || env+=(-e OMANYWHERE_DRM_MASTER=allow)
@@ -644,9 +694,10 @@ cmd_down() {
     say "$container does not exist"
   fi
   if [[ -n $purge ]]; then
-    local volume kept=()
+    local volume dir kept=() dirs=()
     for volume in "$home_volume" "$state_volume"; do
-      docker volume inspect "$volume" >/dev/null 2>&1 || continue
+      dir=$(volume_dir "$volume") || continue
+      [[ -z $dir ]] || dirs+=("$dir")
       out=$(docker volume rm "$volume" 2>&1) || {
         say "could not remove the volume $volume: $out"
         kept+=("$volume")
@@ -656,6 +707,9 @@ cmd_down() {
     ((${#kept[@]} == 0)) || die "kept $config, as ${kept[*]} remains; run down $name --purge again once nothing uses it"
     rm -rf -- "$config"
     say "removed the volumes $home_volume and $state_volume, and $config"
+    # A directory someone named isn't removed for them: they delete it.
+    ((${#dirs[@]} == 0)) ||
+      say "the volumes' files stay in ${dirs[*]} (made with --data); delete them yourself, as root (sudo rm -r), once you don't need them"
   else
     say "kept the volumes $home_volume and $state_volume, and $config"
   fi
@@ -693,6 +747,10 @@ print_status() {
     [[ -z $health ]] || printf '%-10s %s\n' health "$health"
   fi
   [[ -z $port ]] || printf '%-10s %s\n' ssh "$(endpoint) (Host $container: omanywhere ssh-config $name)"
+  local dir
+  dir=$(volume_dir "$home_volume") && [[ -n $dir ]] &&
+    printf '%-10s %s\n' data "$dir and $(volume_dir "$state_volume")"
+  return 0
 }
 
 cmd_status() {
