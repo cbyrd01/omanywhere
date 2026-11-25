@@ -83,6 +83,17 @@ cexec "$name" journalctl -b -u omanywhere-session.service --no-pager | grep -F "
 docker logs "$name" 2>&1 | grep -F "$missing" >/dev/null || fail "docker logs does not say the DRM card is missing"
 pass "no DRM card: omanywhere-session.service skipped, and the journal and docker logs say why"
 
+# The image's HEALTHCHECK: with no card there is no desktop, and that passes;
+# sshd down fails it. Docker runs it every 5 s in the start period.
+out=$(cexec "$name" /usr/lib/omanywhere/health) || fail "the healthcheck failed with no card: $out"
+[[ $out == "ok: no DRM card, so no desktop" ]] || fail "the healthcheck said: $out"
+health=$(wait_healthy "$name" 30) || fail "docker reports the container $health, not healthy, 30 s after boot"
+cexec "$name" systemctl stop sshd.service
+out=$(cexec "$name" /usr/lib/omanywhere/health) && fail "the healthcheck passed with sshd stopped: $out"
+[[ $out == "sshd is inactive" ]] || fail "the healthcheck said, with sshd stopped: $out"
+cexec "$name" systemctl start sshd.service
+pass "healthcheck: healthy with no card, fails when sshd stops"
+
 # Every failed (or restart-looping) unit must be in the allow list, which
 # carries a reason for each.
 check_failed "$name" "$here/allowed-failed.txt"

@@ -106,6 +106,9 @@ if [[ -n ${OMANYWHERE_TEST_EXPECT_SKIP:-} ]]; then
     fail "the journal does not say: $OMANYWHERE_TEST_EXPECT_SKIP"
   docker logs "$name" 2>&1 | grep -F "$OMANYWHERE_TEST_EXPECT_SKIP" >/dev/null || fail "docker logs does not say: $OMANYWHERE_TEST_EXPECT_SKIP"
   pass "omanywhere-session.service skipped on $cards, and the journal and docker logs say: $OMANYWHERE_TEST_EXPECT_SKIP"
+  out=$(cexec "$name" /usr/lib/omanywhere/health) && fail "the healthcheck passed with the desktop skipped on a card: $out"
+  [[ $out == "the desktop is inactive" ]] || fail "the healthcheck said, with the desktop skipped: $out"
+  pass "healthcheck fails: the container has a card and no desktop"
   check_failed "$name" "$here/allowed-failed.txt"
   echo "desktop test passed ($cards: skipped as expected)"
   exit 0
@@ -198,22 +201,15 @@ done
 pass "a named headless output, gliff-test, stays on"
 
 # Reloading keeps the container's monitor rules: the physical connectors stay
-# off, and the desktop keeps a monitor. Hyprland reloads after hyprctl
-# returns, and says so on its event socket: wait for that, up to 10 s.
-# shellcheck disable=SC2016 # the script runs, and expands, in the container
-as_owner python3 -I -c '
-import glob, os, socket, subprocess, sys
-events = socket.socket(socket.AF_UNIX)
-events.connect(glob.glob(os.environ["XDG_RUNTIME_DIR"] + "/hypr/*/.socket2.sock")[0])
-events.settimeout(10)
-subprocess.run(["hyprctl", "--instance", "0", "reload"], check=True, stdout=subprocess.DEVNULL)
-seen = b""
-while b"configreloaded>>" not in seen:
-    data = events.recv(4096)
-    if not data:
-        sys.exit("the event socket closed")
-    seen += data
-' || fail "hyprctl reload failed, or Hyprland did not report the reload in 10 s"
+# off, and the desktop keeps a monitor. hyprctl reload answers ok once Hyprland
+# has read the config again, but the monitor rules take effect at the next
+# frame, so a screenshot, which waits for a frame, comes before the checks.
+# (Waiting for configreloaded on the event socket instead raced: Hyprland
+# only sends events to a client it has accepted, and a just-connected one may
+# not be yet.)
+[[ $(hyprctl reload) == ok ]] || fail "hyprctl reload failed"
+as_owner WAYLAND_DISPLAY="$display" timeout 10 grim /tmp/s.png ||
+  fail "grim failed, or got no frame in 10 s, after hyprctl reload"
 count=$(hypr_json monitors length)
 ((count > 0)) || fail "no monitor after hyprctl reload"
 check_no_physical "after hyprctl reload"
@@ -234,6 +230,9 @@ failed=$(cexec "$name" systemctl --user -M "$user@" list-units --all --plain --n
 pass "no failed user units"
 check_failed "$name" "$here/allowed-failed.txt"
 check_no_physical "at the end"
+out=$(cexec "$name" /usr/lib/omanywhere/health) || fail "the healthcheck failed with the desktop up: $out"
+[[ $out == ok ]] || fail "the healthcheck said, with the desktop up: $out"
+pass "healthcheck passes"
 
 # The desktop shuts down cleanly with the container, before docker's SIGKILL.
 start=$(date +%s%N)

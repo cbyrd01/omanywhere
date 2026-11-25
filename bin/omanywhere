@@ -431,6 +431,18 @@ desktop_line() {
   esac
 }
 
+# health_line: Docker's health of the container (the image's HEALTHCHECK),
+# with the check's last message when it isn't healthy; empty for a container
+# made from an older image without one.
+health_line() {
+  local out health said
+  out=$(docker container inspect -f '{{with .State.Health}}{{.Status}}{{"\n"}}{{range .Log}}{{.Output}}{{end}}{{end}}' "$container" 2>/dev/null) || return 0
+  health=${out%%$'\n'*}
+  [[ -n $health ]] || return 0
+  [[ $health == healthy ]] || said=$(sed '1d; /^$/d' <<<"$out" | tail -n 1)
+  echo "$health${said:+: $said}"
+}
+
 endpoint() {
   if [[ $listen == *:* ]]; then echo "[$listen]:$port"; else echo "$listen:$port"; fi
 }
@@ -676,6 +688,9 @@ print_status() {
   if [[ $state == running ]]; then
     [[ -n $system ]] || system=$(cexec systemctl is-system-running 2>/dev/null) || true
     printf '%-10s %s\n' systemd "${system:-unknown}" owner "$(owner_line)" desktop "$(desktop_line)"
+    local health
+    health=$(health_line)
+    [[ -z $health ]] || printf '%-10s %s\n' health "$health"
   fi
   [[ -z $port ]] || printf '%-10s %s\n' ssh "$(endpoint) (Host $container: omanywhere ssh-config $name)"
 }

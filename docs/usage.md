@@ -26,6 +26,7 @@ container  running
 systemd    running
 owner      active (omarchy)
 desktop    running on /dev/dri/card1, gpu, nvidia; GLIFF_VIDEO=gpu GLIFF_CAPTURE=auto
+health     healthy
 ssh        127.0.0.1:32768 (Host omanywhere-desk: omanywhere ssh-config desk)
 ```
 
@@ -109,6 +110,23 @@ prints that unit's journal. A key line that isn't a key causes this, for example
 be no way in, so `up` stops the container rather than leave it running. It does the same if
 systemd doesn't finish booting in 3 minutes. Fix the input, such as with `up NAME --key FILE` or `--github USER`,
 and run `up` again.
+
+### Health
+
+The image has a Docker `HEALTHCHECK` (`/usr/lib/omanywhere/health`), so `docker ps` shows
+each container as `healthy`, `starting` or `unhealthy`, and `status` has a `health` line. A
+container is healthy when:
+
+- systemd is `running`, not `degraded` (a unit failed) or still starting;
+- sshd is active;
+- the desktop session is running. A container with no card (`--gpu none`) has no desktop and
+  passes without one.
+
+A desktop that was skipped although the container has a card, such as one whose DRM master
+was refused, makes the container unhealthy. The `desktop` line in `status` says why. Docker
+checks every 5 s while the container boots (for up to 4 minutes), then every 30 s, and a
+container turns unhealthy after 3 failures in a row. `docker inspect omanywhere-NAME` keeps the
+last checks' output under `State.Health`. Health is only reported: Docker doesn't restart an unhealthy container.
 
 `down --purge` stops if Docker can't remove a volume, such as one another container uses. It
 names the volume and keeps the config directory, which holds that volume's password, if it has one.
@@ -459,6 +477,9 @@ Start with `omanywhere status NAME`.
   (`down NAME`, then `up NAME --password`), and the lock takes it. A boot with a password over
   the same home removes the `idle.lock` line that the owner script set (Omarchy's default of
   300 applies again), unless you changed it yourself.
+- **`health unhealthy: ...`.** The check's message names what is down: systemd degraded (run
+  `docker exec omanywhere-NAME systemctl --failed`), sshd, or the desktop, which the
+  `desktop` line explains. See [Health](#health).
 - **`owner failed`.** Run `docker exec omanywhere-NAME journalctl -b -u omanywhere-owner`.
   Usually a key line isn't a key.
 - **The desktop restarts, or is `failed`.** Run `docker exec omanywhere-NAME journalctl -b -u
@@ -487,3 +508,10 @@ container's choice for your card is wrong: please report it.
 
 If gliff can't connect at all, try `ssh omanywhere-NAME true`. ssh asks for the host key the
 first time. To rule out the local end, try `gliff --video cpu omanywhere-NAME`.
+
+### Reporting a problem
+
+Use the [bug form](https://github.com/cbyrd01/omanywhere/issues/new?template=bug.yml). It
+asks for `omanywhere status NAME` and the relevant part of `docker logs omanywhere-NAME`, which
+carries the boot and the desktop session's messages. Check what you paste for keys and
+passwords first. Report a security problem privately, as [SECURITY.md](../SECURITY.md) says.
